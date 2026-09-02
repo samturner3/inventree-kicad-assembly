@@ -337,14 +337,39 @@ we only continue once it passes.
 
 ### Spikes (de-risk the unknowns first)
 
-- **S1 — InvenTree UI plugin mechanics**, no iBOM involved: scaffold a
-  minimal `UserInterfaceMixin` plugin, confirm `ENABLE_PLUGINS_INTERFACE` + a
-  panel actually renders on a Build Order page on Sam's real 1.3.2 instance,
-  confirm the `api` context object works, and round-trip one
-  `/api/build/{id}/consume/` call + background-task poll from panel JS
-  against a test build. The least-known piece.
-  *Test gate: panel visible on a Build Order page; one consume verified in
-  the InvenTree UI.*
+- **S1 — InvenTree UI plugin mechanics** — ✅ **PASSED 2026-09-02.**
+  Panel renders on the Build Order page under "Plugin Provided → Assembly";
+  `context` gives `model=build` and the build `id`; `context.api` reaches the
+  API with the logged-in session; and a real consume round-trip moved stock
+  on the throwaway build BO-0004 (`BuildLine.consumed` 0 → 1, `allocated`
+  5 → 4, StockItem 665 100 → 99, task `complete` and `success`).
+
+  Findings that change later phases:
+    - **`POST /api/plugins/install/` must include `packagename`, not just
+      `url`.** In `installer.py` the plugins.txt update, the registry reload
+      *and* the static-file collection are all gated behind a `version` key
+      that is only set when `packagename` is given. A url-only install still
+      reports success while silently skipping all three — which is why
+      `/static/plugins/kicad-assembly/panel.js` 404'd through four install
+      cycles. Check the response carries `version`.
+    - **Static files are collected only on install, never on reload.**
+      `collect_plugins` in the reload payload means plugin *classes*.
+    - **`get_ui_panels` exceptions are swallowed into `[]`** by
+      `PluginUIFeatureList`, so a plugin bug and "no panels offered" look
+      identical. The first failure here was the registry holding the plugin
+      *class* rather than an instance (fixed by a second reload); a
+      literals-only diagnostic panel is how to tell the two apart.
+    - **The worker took longer than 10 s to run the consume task.** The spike
+      polled 20 × 500 ms and gave up while still pending — though it
+      correctly reported "queued" rather than claiming success. P2 needs a
+      longer poll with backoff, and a "queued, still working" state distinct
+      from both success and failure.
+    - `context.user` is not a plain object with `.username`; check its real
+      shape before using it in P2.
+
+  Throwaway fixtures left in place for P2/P3 (delete when done): parts 650
+  `ZZ-TEST-COMPONENT` / 651 `ZZ-TEST-ASSEMBLY`, BOM item 172, StockItem 665,
+  build 5 `BO-0004`.
 - **S2 — `web/user.js` bridge + hydration + fullscreen**: against one
   already-generated `ibom.html`, confirm `CHECKBOX_CHANGE_EVENT` fires with
   the expected payload, `postMessage` reaches a bare test page hosting it in
