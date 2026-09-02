@@ -1,4 +1,4 @@
-// kicad-inventree-build: relay iBOM events to an embedding page.
+// inventree-kicad-assembly: relay iBOM events to an embedding page.
 //
 // InteractiveHtmlBom inlines this file into every generated ibom.html via its
 // own ///USERJS/// extension point, after util.js and ibom.js -- so
@@ -30,7 +30,7 @@
       ? IBOM_BRIDGE_TARGET_ORIGIN
       : window.location.origin;
 
-  var PROTOCOL = "kicad-inventree-build/1";
+  var PROTOCOL = "inventree-kicad-assembly/1";
 
   function post(type, payload) {
     window.parent.postMessage(

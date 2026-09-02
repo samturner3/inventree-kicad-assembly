@@ -36,11 +36,11 @@ Standard InvenTree plugin install (add to `plugins.txt`, restart the server
 and worker containers — a plugin *reload* is not enough for a new plugin).
 
 ```
-git+https://github.com/samturner3/kicad-inventree-build.git#subdirectory=inventree-plugin
+git+https://github.com/samturner3/inventree-kicad-assembly.git#subdirectory=inventree-plugin
 ```
 
 ## Frontend
 
 The panel is React + Mantine + TypeScript, built with Vite into
-`inventree_build_ibom/static/` (gitignored — build output, not source). The
+`inventree_kicad_assembly_panel/static/` (gitignored — build output, not source). The
 build step and the `frontend/` source tree land in S1.

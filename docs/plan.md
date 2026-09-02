@@ -32,12 +32,12 @@ current two-script pipeline.
 ## Project structure: a new standalone repo (decided)
 
 This is a new, complex project — it gets its **own git repo in a new folder,
-outside both existing repos** (e.g. `/Users/sam/code_personal/kicad-inventree-build/`
+outside both existing repos** (e.g. `/Users/sam/code_personal/inventree-kicad-assembly/`
 — working name, confirm at scaffold time). One repo holding the whole
 integration project:
 
 ```
-kicad-inventree-build/
+inventree-kicad-assembly/
 ├── docs/
 │   └── plan.md              ← this plan, kept current as the project evolves
 ├── kicad-plugin/            ← the KiCad Action Plugin (Sync BOM + Generate Build iBOM)

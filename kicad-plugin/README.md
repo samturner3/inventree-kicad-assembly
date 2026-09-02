@@ -14,13 +14,13 @@ phases P3 and P4.
 
 KiCad loads plugin *directories* by path, and imports them as Python packages,
 so the installed directory name has to stay a valid Python identifier
-(`kicad_inventree_build`). Symlink rather than copy, so `git pull` updates the
+(`inventree_kicad_assembly`). Symlink rather than copy, so `git pull` updates the
 installed plugin:
 
 ```bash
 # macOS (KiCad 10); adjust the version/path for your install
-ln -s "$PWD/kicad_inventree_build" \
-      ~/Documents/KiCad/10.0/3rdparty/plugins/kicad_inventree_build
+ln -s "$PWD/inventree_kicad_assembly" \
+      ~/Documents/KiCad/10.0/3rdparty/plugins/inventree_kicad_assembly
 ```
 
 Then **Tools → External Plugins → Refresh Plugins** (or restart the PCB
@@ -35,7 +35,7 @@ then applies to every board generated afterwards. iBOM's own source is not
 modified.
 
 ```bash
-ln -s "$PWD/kicad_inventree_build/ibom_bridge/user.js" \
+ln -s "$PWD/inventree_kicad_assembly/ibom_bridge/user.js" \
       ~/Documents/KiCad/10.0/3rdparty/plugins/org_openscopeproject_InteractiveHtmlBom/web/user.js
 ```
 

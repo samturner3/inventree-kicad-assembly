@@ -20,15 +20,15 @@ from plugin.mixins import SettingsMixin, UserInterfaceMixin
 
 from . import __version__ as PLUGIN_VERSION
 
-PLUGIN_SLUG = "build-ibom"
+PLUGIN_SLUG = "kicad-assembly"
 
 
-class BuildIbomPlugin(SettingsMixin, UserInterfaceMixin, InvenTreePlugin):
+class KicadAssemblyPlugin(SettingsMixin, UserInterfaceMixin, InvenTreePlugin):
     """Interactive PCB assembly against a Build Order."""
 
-    NAME = "BuildIbom"
+    NAME = "KicadAssembly"
     SLUG = PLUGIN_SLUG
-    TITLE = _("Build iBOM")
+    TITLE = _("KiCad Assembly")
     DESCRIPTION = _(
         "Assemble a PCB against a Build Order using InteractiveHtmlBom, "
         "consuming allocated stock as parts are placed"
@@ -50,7 +50,7 @@ class BuildIbomPlugin(SettingsMixin, UserInterfaceMixin, InvenTreePlugin):
 
         return [
             {
-                "key": "build-ibom-assembly",
+                "key": "kicad-assembly-panel",
                 "title": _("Assembly"),
                 "description": _("Place parts and consume stock"),
                 "icon": "ti:circuit-board:outline",

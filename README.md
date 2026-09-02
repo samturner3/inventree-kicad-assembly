@@ -1,4 +1,4 @@
-# kicad-inventree-build
+# inventree-kicad-assembly
 
 Ties a KiCad PCB design to an InvenTree **Build Order**, so that physically
 placing a component during assembly consumes its stock in InvenTree.

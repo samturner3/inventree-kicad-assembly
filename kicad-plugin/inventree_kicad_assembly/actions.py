@@ -32,7 +32,7 @@ class _BaseAction(pcbnew.ActionPlugin, object):
 
     def Run(self):
         _message(
-            "Not implemented yet (kicad-inventree-build {}).\n\n"
+            "Not implemented yet (inventree-kicad-assembly {}).\n\n"
             "See docs/plan.md for the phase that builds this.".format(version),
             self.name,
         )
