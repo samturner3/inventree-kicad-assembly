@@ -394,15 +394,45 @@ we only continue once it passes.
   cannot be verified by automation. If it ever proves unavailable in the panel
   context, the fallback is a CSS expand-to-viewport mode, which needs no
   permission at all.
-- **S3 — KiCad plugin environment**: from a minimal Action Plugin under
-  KiCad's bundled Python, confirm HTTPS calls work (is `requests` available,
-  or pip-install-once / stdlib fallback needed), read symbol fields off a
-  real schematic (does an MPN field already exist on Sam's symbols? decides
-  whether match strategy 2 is usable), and write one field back to a
-  `.kicad_sch` safely (prefer KiCad APIs over raw S-expression editing;
-  dry-run against a clean-git schematic so the diff is reviewable).
-  *Test gate: field write-back visible as a clean, sane git diff in a test
-  project.*
+- **S3 — KiCad plugin environment** — ✅ **PASSED 2026-09-02**, all three
+  questions answered, each with a surprise.
+
+  **HTTPS.** `requests` *is* bundled with KiCad's Python (2.32.3), but stdlib
+  `urllib` fails with `CERTIFICATE_VERIFY_FAILED` — KiCad's macOS Python has
+  no CA bundle wired up, its "Install Certificates.command" never having run.
+  Fixed in `core/client.py` by building the SSL context from `certifi` (which
+  ships with requests, so it is present) and falling back to the default
+  context otherwise. Verification is never disabled; a missing bundle
+  produces a real error with a pointed hint. The whole CLI now runs
+  identically under KiCad's Python and the system one.
+
+  **`python -m` broke the CLI.** Importing the package runs `__init__.py`,
+  which registered the ActionPlugins, and the process then died with "The
+  application handle was destroyed after running Python plugin". pcbnew is
+  importable from KiCad's Python outside the app, so "can I import pcbnew" is
+  not a usable guard. Registration is now gated on an env var plus an argv
+  check, and `inventree_assembly_cli.py` sets the opt-out *before* importing
+  the package.
+
+  **Symbol fields.** The MPN field is called **`"Manufacturer Part"`**, not
+  MPN. Coverage on the real board (79 symbols, ungrouped): 18 have LCSC+MPN,
+  2 LCSC only, **3 MPN only** (which SKU matching alone would miss), and
+  **56 have neither**. So no single strategy comes close — the review dialog
+  and the IPN write-back are the main path for this board, not a fallback.
+
+  **Reading the BOM: use `kicad-cli sch export bom`**, not S-expression
+  parsing. It resolves the hierarchy, honours DNP (`--exclude-dnp`) and can
+  emit one row per symbol (`--ref-range-delimiter ""`) instead of collapsing
+  to `D1-D4`. The design is hierarchical **across directories** (three of its
+  four sheets live in `../base-schematic/`), so anything walking sheets has
+  to follow `Sheetfile` rather than glob one folder.
+
+  **Write-back** (`core/schematic.py`) splices a property into the exact byte
+  span of a symbol, touching nothing else: a pure 9-line addition per symbol,
+  landing in whichever sheet holds that designator. Idempotent when the value
+  matches, updates in place when it differs (no duplicate properties), and
+  `kicad-cli` still parses all 79 symbols and reads the new field back
+  afterwards. Verified on a copy in its own git repo, never the real board.
 
 ### Phases
 

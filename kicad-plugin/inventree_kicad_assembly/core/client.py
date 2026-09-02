@@ -8,6 +8,7 @@ real hardship.
 """
 
 import json
+import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -17,11 +18,31 @@ class InvenTreeError(RuntimeError):
     """An API call failed. Carries the server's message where there is one."""
 
 
+def _ssl_context():
+    """An SSL context that can actually verify a public certificate here.
+
+    KiCad's bundled macOS Python has no CA bundle wired up -- its
+    "Install Certificates.command" is never run -- so a plain HTTPS call dies
+    with CERTIFICATE_VERIFY_FAILED even against a perfectly valid cert.
+    certifi ships alongside requests, which KiCad does bundle, so borrow its
+    bundle when it is importable. Verification is never disabled: if there is
+    no usable bundle the default context still applies, and the caller gets a
+    real error rather than a silently unverified connection.
+    """
+    try:
+        import certifi
+
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        return ssl.create_default_context()
+
+
 class InvenTreeClient:
     def __init__(self, host, token, timeout=30):
         self.base = host.rstrip("/")
         self.token = token
         self.timeout = timeout
+        self._ssl = _ssl_context()
 
     # --- plumbing -----------------------------------------------------
 
@@ -38,15 +59,20 @@ class InvenTreeClient:
 
         req = urllib.request.Request(url, data=body, headers=headers, method=method)
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            with urllib.request.urlopen(req, timeout=self.timeout, context=self._ssl) as resp:
                 raw = resp.read()
                 return json.loads(raw) if raw else None
         except urllib.error.HTTPError as e:
             detail = e.read().decode(errors="replace")[:500]
             raise InvenTreeError(f"{method} {path} -> {e.code}: {detail}") from None
         except urllib.error.URLError as e:
+            hint = ""
+            if isinstance(getattr(e, "reason", None), ssl.SSLCertVerificationError):
+                hint = ("\nThe Python running this has no usable CA bundle. Installing "
+                        "certifi into it fixes this (KiCad's bundled Python normally "
+                        "already has it, via requests).")
             raise InvenTreeError(
-                f"{method} {path} -> cannot reach {self.base}: {e.reason}"
+                f"{method} {path} -> cannot reach {self.base}: {e.reason}{hint}"
             ) from None
 
     def get(self, path, params=None):
