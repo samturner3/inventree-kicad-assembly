@@ -45,19 +45,34 @@ class KicadAssemblyPlugin(SettingsMixin, UserInterfaceMixin, InvenTreePlugin):
         `context` carries the page's model and id; the panel is irrelevant
         anywhere else, and returning nothing keeps it off those pages.
         """
-        if context.get("target_model") != "build":
-            return []
+        panels = []
 
-        return [
-            {
-                "key": "kicad-assembly-panel",
-                "title": _("Assembly"),
-                "description": _("Place parts and consume stock"),
-                "icon": "ti:circuit-board:outline",
-                "feature_type": "panel",
-                "source": self.plugin_static_file("panel.js:renderPanel"),
-                "context": {
-                    "build_id": context.get("target_id"),
-                },
-            }
-        ]
+        # S1 diagnostic. The features endpoint swallows any exception raised in
+        # here and returns an empty list, which is indistinguishable from "no
+        # panels offered" -- so this one is built from literals only, and its
+        # presence or absence says whether this method runs at all. Removed
+        # once S1's gate passes.
+        panels.append({
+            "key": "kicad-assembly-diagnostic",
+            "title": "S1 diagnostic",
+            "description": "target_model={!r} target_id={!r}".format(
+                context.get("target_model"), context.get("target_id")
+            ),
+            "source": "/static/plugins/kicad-assembly/panel.js:renderPanel",
+        })
+
+        if context.get("target_model") != "build":
+            return panels
+
+        panels.append({
+            "key": "kicad-assembly-panel",
+            "title": _("Assembly"),
+            "description": _("Place parts and consume stock"),
+            "icon": "ti:circuit-board:outline",
+            "source": self.plugin_static_file("panel.js:renderPanel"),
+            "context": {
+                "build_id": context.get("target_id"),
+            },
+        })
+
+        return panels
