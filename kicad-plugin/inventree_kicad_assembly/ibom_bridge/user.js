@@ -40,7 +40,9 @@
   }
 
   EventHandler.registerCallback(IBOM_EVENT_TYPES.ALL, function (e) {
-    // args.refs is [[value, reference], ...]; the parent only needs the
+    // args.refs is [[designator, footprintIndex], ...]; send designators
+    // (r[0]). The index is meaningless outside this one generated file,
+    // whereas the designator is what maps to an InvenTree BOM line. Only the
     // designators. One ref in ungrouped view, N in grouped view -- the parent
     // treats both the same way, consuming one unit per newly placed designator.
     var args = e.args || {};
@@ -48,7 +50,7 @@
       checkbox: args.checkbox,
       state: args.state,
       refs: (args.refs || []).map(function (r) {
-        return r[1];
+        return r[0];
       }),
     });
   });
@@ -59,6 +61,12 @@
   // so picking the build up on a different PC shows it as it was left.
   //
   // Payload: {state: {"Placed": ["C1", "C3"], "Sourced": [...]}}
+  //
+  // Designator strings are written straight into checkboxStoredRefs even
+  // though iBOM stores footprint indices internally: its own getStoredCheckboxRefs
+  // runs each entry through a convert() that falls back to a designator lookup
+  // when the value is not numeric. So no index mapping is needed here, and the
+  // stored state stays readable.
   window.addEventListener("message", function (event) {
     if (event.origin !== targetOrigin) {
       return;
