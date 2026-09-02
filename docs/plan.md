@@ -370,14 +370,30 @@ we only continue once it passes.
   Throwaway fixtures left in place for P2/P3 (delete when done): parts 650
   `ZZ-TEST-COMPONENT` / 651 `ZZ-TEST-ASSEMBLY`, BOM item 172, StockItem 665,
   build 5 `BO-0004`.
-- **S2 — `web/user.js` bridge + hydration + fullscreen**: against one
-  already-generated `ibom.html`, confirm `CHECKBOX_CHANGE_EVENT` fires with
-  the expected payload, `postMessage` reaches a bare test page hosting it in
-  an iframe, **inbound hydration re-renders the right ticks** (post a state
-  message in and confirm the table and stats update), and events keep
-  flowing while `iframe.requestFullscreen()` is active.
-  *Test gate: checkbox events logged in the parent page; a hydrated state
-  visibly restores ticks; fullscreen on/off.*
+- **S2 — `web/user.js` bridge + hydration + fullscreen** — ✅ **PASSED
+  2026-09-02** against a real generated `ibom.html` of SR-PCB-D123-MW-PRO,
+  driven from a scratch harness page. `ready` reports the checkbox names and
+  board title; a checkbox click emits
+  `{"checkbox":"Placed","state":"checked","refs":["C2","C12"]}`; a grouped row
+  correctly reports every designator in one event; hydration from the parent
+  both clears and restores ticks (and drives the board highlight); the
+  `hydrated` ack comes back. Fullscreen confirmed by hand on mobile; desktop
+  still to check.
+
+  The bug this spike existed to catch: **iBOM's event refs are
+  `[designator, footprintIndex]` pairs and the bridge was sending `r[1]`, the
+  index** — meaningless outside one generated file. Fixed to `r[0]`. Left
+  unnoticed, the panel would have been looking up BOM lines by numbers like
+  `57`. Hydration needed no matching change: iBOM stores indices internally
+  but its `getStoredCheckboxRefs` runs entries through a `convert()` that
+  falls back to a designator lookup, so writing designator strings works and
+  keeps stored state readable.
+
+  Note `requestFullscreen()` rejects a synthetic click with
+  `TypeError: not granted` — it needs real user activation, so this part
+  cannot be verified by automation. If it ever proves unavailable in the panel
+  context, the fallback is a CSS expand-to-viewport mode, which needs no
+  permission at all.
 - **S3 — KiCad plugin environment**: from a minimal Action Plugin under
   KiCad's bundled Python, confirm HTTPS calls work (is `requests` available,
   or pip-install-once / stdlib fallback needed), read symbol fields off a
@@ -393,10 +409,26 @@ we only continue once it passes.
 - **P0 — Repo scaffold**: create the new repo/folder, `docs/plan.md` (this
   plan), package skeletons for `kicad-plugin/` and `inventree-plugin/`,
   README. *Gate: repo pushed, structure agreed.*
-- **P1 — Build-order-scoped generation**: port `inventree_to_ibom_xml.py`
-  logic into the new repo's shared module with `--build-order` (component
-  #2), including `BuildItem` pks in the XML. *Gate: generated ibom.html for a
-  real build order shows allocation-correct IPN/Location.*
+- **P1 — Build-order-scoped generation** — ✅ **PASSED 2026-09-02.**
+  `core/client.py` (stdlib urllib, no `requests` dependency to install into
+  KiCad's Python), `core/ibom_xml.py` and a `cli.py` entry point. Generated
+  against real build BO-0003: 45 designators with correct IPNs, and Locations
+  matching the build's actual allocations (`Gridfinity/Bin-A1`,
+  `Resistor Sample Book`, …). Verified rendering in a real `ibom.html`, with
+  identical parts in different bins still grouped into one row.
+
+  Two calls turned out to cover everything, so no BOM fetch is needed in
+  build mode: `/api/build/line/?build=<pk>&part_detail=true` gives the
+  designators (`reference`) and IPN for *every* line, allocated or not, and
+  `/api/build/item/?build=<pk>&location_detail=true` gives the allocation pk
+  and location pathstring.
+
+  Designators are assigned to allocations in order, spending each one's
+  quantity — so a line needing 7 with 5 in one bin and 2 in another tells the
+  assembler which five come from where, rather than naming one bin for all
+  seven. Designators past the allocated quantity get a blank Location, which
+  correctly showed T5 unallocated on the throwaway build after S1 consumed
+  one unit of five.
 - **P2 — InvenTree panel end-to-end**: real panel, real iframe (with
   fullscreen), real consume flow with pending/error/retry states, against a
   test build order. *Gate: the full check-a-box → stock-consumed loop works
