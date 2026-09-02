@@ -476,10 +476,22 @@ we only continue once it passes.
   as the real origin), so the bridge is unaffected.
 
   **iBOM's localStorage is per-origin, not per-build**, keyed by board title
-  and revision. Two build orders of the same board therefore share checkbox
-  keys in the browser. Server-held state makes this harmless — hydration
-  overwrites on every load — but it is the reason the browser must never be
-  treated as the source of truth.
+  and revision, so two build orders of the same board shared checkbox keys.
+  Rather than paper over it with hydration, checkbox state was taken out of
+  the browser entirely: the panel injects the build's state into the document
+  before framing it, and the bridge serves `checkbox_*` from memory. The
+  first painted frame is correct, nothing is written to localStorage, and
+  stale keys from earlier versions are cleared on load. Genuine per-viewer
+  preferences (dark mode, layout, visible columns) still use localStorage,
+  which is where they belong.
+
+  Verified: `shimInstalled: true`, no `checkbox_*` keys in localStorage after
+  interacting, `darkmode` still persisting, and the same board under BO-0003
+  and BO-0004 showing different ticks in the same browser.
+
+  A bug this exposed: attachment `upload_date` is **date-only**, so ordering
+  by it left same-day uploads tied and the panel silently framed a stale
+  board. Ordered by `pk` instead.
 
   Consumes are serialised through a promise chain: two designators on one BOM
   line would otherwise race for the same allocation. A task still running when
