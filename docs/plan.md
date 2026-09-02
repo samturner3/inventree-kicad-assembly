@@ -497,9 +497,32 @@ we only continue once it passes.
   line would otherwise race for the same allocation. A task still running when
   the poll budget expires is reported `queued` and deliberately *not* recorded
   as consumed, so a slow worker never fakes a stock movement.
-- **P3 — KiCad "Generate Build iBOM" action**: generation + attachment
-  upload, one click from KiCad. *Gate: click in KiCad → ibom appears on the
-  Build Order page.*
+- **P3 — KiCad "Generate Build iBOM" action** — ✅ **built and verified
+  headlessly 2026-09-02**; the GUI click itself is Sam's to try.
+  `core/generate.py` + `core/workflows.py` + the wx action. Run against the
+  real BO-0003 it produced 45 designators and attached
+  `SR-PCB-D123-MW.ibom.html`, which the panel then framed.
+
+  iBOM is driven through **its own Python API, not a subprocess**: inside
+  KiCad its package is importable and the board is already parsed, so this
+  avoids hunting for an interpreter (KiCad's `sys.executable` is the app
+  binary, not python) and avoids re-parsing the board.
+
+  Uploads **replace** the previous `.ibom.html` on that order rather than
+  accumulating — but only files matching that suffix, so a user's own
+  attachments on the build order are never touched.
+
+  Two bugs worth remembering: InvenTree build status **20 is *production***,
+  not complete (40), so an "exclude 20/30" filter offered only finished
+  orders — exactly backwards. And settings must be readable from a config
+  file, not just the environment: KiCad launched from the desktop inherits
+  nothing from a shell, so env-only config works from a terminal and fails
+  mysteriously from the dock.
+
+  Expected noise: iBOM logs "Component X is missing from schematic data" for
+  every footprint absent from the InvenTree BOM. Test points, fiducials and
+  mounting holes never appear in a BOM, so this is normal rather than a
+  fault.
 - **P4 — KiCad "Sync BOM" action**: layered matching, the management review
   dialog, IPN write-back, and the `inventree-lcsc-import` find-or-create
   endpoint + soft-dependency probe (built as a normal versioned release of
