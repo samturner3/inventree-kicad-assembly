@@ -116,7 +116,7 @@ function AssemblyPanel({ context }: { context: PluginContext }) {
         setState(st);
         stateRef.current = st;
         if (att) {
-          const url = await fetchAttachmentUrl(context, att);
+          const url = await fetchAttachmentUrl(context, att, st);
           if (cancelled) {
             URL.revokeObjectURL(url);
             return;
@@ -186,7 +186,14 @@ function AssemblyPanel({ context }: { context: PluginContext }) {
 
       if (type === "ready") {
         setFrameReady(true);
-        sendHydrate(frameRef.current, stateRef.current.checkboxes, origin);
+        if (payload?.seeded) {
+          // State was injected before the document loaded, so the frame is
+          // already showing this build correctly and events can be trusted now.
+          setHydrated(true);
+          hydratedRef.current = true;
+        } else {
+          sendHydrate(frameRef.current, stateRef.current.checkboxes, origin);
+        }
         return;
       }
       if (type === "hydrated") {

@@ -90,9 +90,30 @@ export async function findIbomAttachment(ctx: PluginContext, buildId: number | s
  *
  * The caller owns the returned URL and must revokeObjectURL it.
  */
-export async function fetchAttachmentUrl(ctx: PluginContext, attachment: any): Promise<string> {
-  const r = await ctx.api.get(attachment.attachment, { responseType: "blob" });
-  return URL.createObjectURL(r.data as Blob);
+export async function fetchAttachmentUrl(
+  ctx: PluginContext,
+  attachment: any,
+  state: PanelState
+): Promise<string> {
+  const r = await ctx.api.get(attachment.attachment, { responseType: "text" });
+  const html = injectState(String(r.data), state);
+  return URL.createObjectURL(new Blob([html], { type: "text/html" }));
+}
+
+/**
+ * Put this build's checkbox state into the document before it is framed.
+ *
+ * iBOM reads its stored state during window.onload, long before a postMessage
+ * could arrive, and it keys that storage on the board rather than the build --
+ * so without this a frame would briefly show whichever build of this board was
+ * open last. Injecting ahead of load means the first painted frame is already
+ * correct, and the bridge keeps checkbox state out of localStorage entirely.
+ */
+export function injectState(html: string, state: PanelState): string {
+  const payload = JSON.stringify({ checkboxes: state.checkboxes });
+  const tag = `<script>var IBOM_BRIDGE_STATE=${payload};</script>`;
+  const at = html.indexOf("<script");
+  return at === -1 ? tag + html : html.slice(0, at) + tag + html.slice(at);
 }
 
 export async function loadState(ctx: PluginContext, buildId: number | string): Promise<PanelState> {

@@ -39,6 +39,62 @@
     );
   }
 
+  // --- checkbox state comes from the server, not this browser ---------------
+  //
+  // iBOM keys its localStorage on the board title and revision, so every build
+  // order of the same board shares one set of checkbox keys: tick something on
+  // one build and it appears ticked on another. Worse, iBOM reads that storage
+  // during its window.onload init, which happens well before any hydrate
+  // message could arrive, so the frame would briefly show whichever build was
+  // open last.
+  //
+  // Both problems go away by making checkbox state never touch localStorage.
+  // The panel injects this build's state as IBOM_BRIDGE_STATE before the
+  // document is framed, and the checkbox_* keys are served from memory out of
+  // that. Everything else -- dark mode, layout, which columns are shown -- is a
+  // genuine per-viewer preference and still goes to localStorage as usual.
+  //
+  // This runs during parse, before window.onload, so iBOM's own init reads the
+  // seeded values and renders the right state on the first frame.
+  var memory = {};
+  var seeded = typeof IBOM_BRIDGE_STATE !== "undefined" && IBOM_BRIDGE_STATE;
+
+  function isCheckboxKey(key) {
+    return key.indexOf("checkbox_") === 0;
+  }
+
+  function seed(state) {
+    memory = {};
+    var checkboxes = (state && state.checkboxes) || {};
+    Object.keys(checkboxes).forEach(function (name) {
+      memory["checkbox_" + name] = (checkboxes[name] || []).join(",");
+    });
+  }
+
+  if (seeded) {
+    seed(IBOM_BRIDGE_STATE);
+  }
+
+  var realRead = window.readStorage;
+  var realWrite = window.writeStorage;
+
+  window.readStorage = function (key) {
+    if (isCheckboxKey(key)) {
+      return Object.prototype.hasOwnProperty.call(memory, key) ? memory[key] : null;
+    }
+    return realRead(key);
+  };
+
+  window.writeStorage = function (key, value) {
+    if (isCheckboxKey(key)) {
+      // Held in memory only. The panel is told separately, by the checkbox
+      // event below, and it is what persists the change.
+      memory[key] = value;
+      return;
+    }
+    realWrite(key, value);
+  };
+
   EventHandler.registerCallback(IBOM_EVENT_TYPES.ALL, function (e) {
     // args.refs is [[designator, footprintIndex], ...]; send designators
     // (r[0]). The index is meaningless outside this one generated file,
@@ -55,18 +111,18 @@
     });
   });
 
-  // Inbound: the server owns checkbox state, not this browser. The parent
-  // sends the build's stored state on load (and after any correction), and it
-  // is applied over whatever localStorage happens to hold on this machine --
-  // so picking the build up on a different PC shows it as it was left.
+  // Inbound: apply state pushed by the panel after load. With
+  // IBOM_BRIDGE_STATE injected this is no longer how state normally arrives --
+  // it is already correct on the first frame -- but it stays as the way to
+  // apply a correction, or to seed a frame that was embedded without injection.
   //
   // Payload: {state: {"Placed": ["C1", "C3"], "Sourced": [...]}}
   //
-  // Designator strings are written straight into checkboxStoredRefs even
-  // though iBOM stores footprint indices internally: its own getStoredCheckboxRefs
-  // runs each entry through a convert() that falls back to a designator lookup
-  // when the value is not numeric. So no index mapping is needed here, and the
-  // stored state stays readable.
+  // Designator strings go straight into checkboxStoredRefs even though iBOM
+  // stores footprint indices internally: its own getStoredCheckboxRefs runs
+  // each entry through a convert() that falls back to a designator lookup when
+  // the value is not numeric. So no index mapping is needed, and the stored
+  // state stays readable.
   window.addEventListener("message", function (event) {
     if (event.origin !== targetOrigin) {
       return;
@@ -77,10 +133,9 @@
     }
 
     var state = (msg.payload || {}).state || {};
+    seed({ checkboxes: state });
     Object.keys(state).forEach(function (checkbox) {
-      var refs = (state[checkbox] || []).join(",");
-      settings.checkboxStoredRefs[checkbox] = refs;
-      writeStorage("checkbox_" + checkbox, refs);
+      settings.checkboxStoredRefs[checkbox] = (state[checkbox] || []).join(",");
     });
 
     // Re-render so the table, the per-column stats and the board highlights
@@ -93,17 +148,18 @@
     post("hydrated", { checkboxes: Object.keys(state) });
   });
 
-  // The parent cannot trust event flow until this arrives: it fires once the
-  // page has initialised, and carries what the parent needs to identify which
-  // board it is showing. The parent replies with "hydrate", and must ignore
-  // any checkbox events until it has -- otherwise a restored tick looks like
-  // a fresh placement and consumes stock twice.
+  // Fired once the page has initialised. `seeded` tells the panel whether this
+  // frame already had its state injected: if so it is safe to act on checkbox
+  // events immediately, and if not the panel must hydrate first and ignore
+  // events until it has -- otherwise a restored tick looks like a fresh
+  // placement and consumes stock twice.
   window.addEventListener("load", function () {
     post("ready", {
       protocol: PROTOCOL,
       title: pcbdata.metadata.title,
       revision: pcbdata.metadata.revision,
       checkboxes: settings.checkboxes,
+      seeded: !!seeded,
     });
   });
 })();
