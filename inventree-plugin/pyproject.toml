@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "inventree-build-ibom"
+version = "0.0.1"
+description = "Assemble a PCB against an InvenTree Build Order with InteractiveHtmlBom, consuming stock as parts are placed"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{ name = "Sam Turner" }]
+keywords = ["inventree", "kicad", "pcb", "bom", "assembly", "electronics"]
+
+[project.entry-points."inventree_plugins"]
+BuildIbomPlugin = "inventree_build_ibom.core:BuildIbomPlugin"
+
+[tool.setuptools.packages.find]
+include = ["inventree_build_ibom*"]
+
+[tool.setuptools.package-data]
+# Compiled Vite output; built from frontend/, not checked in.
+inventree_build_ibom = ["static/*"]

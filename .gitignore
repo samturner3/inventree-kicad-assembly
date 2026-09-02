@@ -1,0 +1,24 @@
+# Secrets / local config
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# Node / Vite (InvenTree panel frontend)
+node_modules/
+inventree-plugin/inventree_build_ibom/static/
+frontend/dist/
+
+# Generated iBOM artifacts (regenerable per build order)
+*.ibom.html
+ibom_fields_*.xml
+
+# OS
+.DS_Store
+**/.DS_Store
