@@ -8,10 +8,12 @@ real hardship.
 """
 
 import json
+import os
 import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 
 
 class InvenTreeError(RuntimeError):
@@ -131,6 +133,77 @@ class InvenTreeClient:
 
     def get_stock_for_part(self, part_pk):
         return self.rows("/api/stock/", {"part": part_pk})
+
+    # --- writes ------------------------------------------------------
+
+    def delete(self, path):
+        self._request("DELETE", path)
+
+    def upload_attachment(self, model_type, model_id, file_path, filename=None,
+                          comment="", replace_suffix=None):
+        """Attach a file to a model, optionally replacing earlier ones.
+
+        `replace_suffix` (e.g. ".html") deletes existing attachments on this
+        model whose filename ends with it, before uploading. Without that,
+        regenerating a board every few minutes during a build leaves a pile of
+        near-identical attachments and the panel has to guess which is current.
+        """
+        if replace_suffix:
+            for existing in self.rows("/api/attachment/", {
+                "model_type": model_type, "model_id": model_id
+            }):
+                name = str(existing.get("attachment") or "")
+                if name.lower().endswith(replace_suffix.lower()):
+                    try:
+                        self.delete(f"/api/attachment/{existing['pk']}/")
+                    except InvenTreeError:
+                        # A stale attachment that will not delete is not worth
+                        # failing the whole generation over; the panel picks
+                        # the newest by pk regardless.
+                        pass
+
+        filename = filename or os.path.basename(file_path)
+        with open(file_path, "rb") as f:
+            payload = f.read()
+
+        boundary = "----InvenTreeKiCadAssembly" + uuid.uuid4().hex
+        body = bytearray()
+
+        def field(name, value):
+            body.extend(f"--{boundary}\r\n".encode())
+            body.extend(
+                f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode()
+            )
+            body.extend(f"{value}\r\n".encode())
+
+        field("model_type", model_type)
+        field("model_id", model_id)
+        field("comment", comment)
+
+        body.extend(f"--{boundary}\r\n".encode())
+        body.extend(
+            f'Content-Disposition: form-data; name="attachment"; '
+            f'filename="{filename}"\r\n'.encode()
+        )
+        body.extend(b"Content-Type: text/html\r\n\r\n")
+        body.extend(payload)
+        body.extend(f"\r\n--{boundary}--\r\n".encode())
+
+        req = urllib.request.Request(
+            f"{self.base}/api/attachment/",
+            data=bytes(body),
+            headers={
+                "Authorization": f"Token {self.token}",
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout, context=self._ssl) as resp:
+                return json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode(errors="replace")[:500]
+            raise InvenTreeError(f"attachment upload -> {e.code}: {detail}") from None
 
     def get_locations(self):
         """pk -> pathstring for every stock location, fetched once."""
