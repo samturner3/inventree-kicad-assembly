@@ -70,7 +70,10 @@ export async function findIbomAttachment(ctx: PluginContext, buildId: number | s
   const rows = unwrap(r.data).filter((a: any) =>
     String(a.attachment || "").toLowerCase().endsWith(".html")
   );
-  rows.sort((a: any, b: any) => String(b.upload_date).localeCompare(String(a.upload_date)));
+  // Order by pk, not upload_date: that field is date-only, so everything
+  // uploaded on the same day ties and the "newest" is whatever order the API
+  // happened to return -- which silently served a stale board.
+  rows.sort((a: any, b: any) => Number(b.pk) - Number(a.pk));
   return rows[0] ?? null;
 }
 

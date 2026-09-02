@@ -73,6 +73,21 @@
 
   if (seeded) {
     seed(IBOM_BRIDGE_STATE);
+    // Drop any checkbox keys an older build (or an older version of this
+    // bridge) left behind. They are no longer read, and leaving them around
+    // invites someone debugging this to trust a stale value.
+    try {
+      Object.keys(window.localStorage)
+        .filter(function (k) {
+          return k.indexOf("KiCad_HTML_BOM__") === 0 && k.indexOf("checkbox_") !== -1;
+        })
+        .forEach(function (k) {
+          window.localStorage.removeItem(k);
+        });
+    } catch (e) {
+      // Storage can be unavailable (private mode, blocked cookies); the
+      // in-memory state is what matters, so this is not worth failing over.
+    }
   }
 
   var realRead = window.readStorage;
