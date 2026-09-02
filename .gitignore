@@ -12,8 +12,10 @@ venv/
 
 # Node / Vite (InvenTree panel frontend)
 node_modules/
-inventree-plugin/inventree_build_ibom/static/
 frontend/dist/
+# NB: inventree_kicad_assembly_panel/static/ is deliberately NOT ignored --
+# it holds handwritten panel source today. Revisit in P2, when Vite lands and
+# that directory becomes build output instead.
 
 # Generated iBOM artifacts (regenerable per build order)
 *.ibom.html
