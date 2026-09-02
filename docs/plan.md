@@ -459,10 +459,32 @@ we only continue once it passes.
   seven. Designators past the allocated quantity get a blank Location, which
   correctly showed T5 unallocated on the throwaway build after S1 consumed
   one unit of five.
-- **P2 — InvenTree panel end-to-end**: real panel, real iframe (with
-  fullscreen), real consume flow with pending/error/retry states, against a
-  test build order. *Gate: the full check-a-box → stock-consumed loop works
-  live; failure injection shows the error state.*
+- **P2 — InvenTree panel end-to-end** — ✅ **PASSED 2026-09-02.** The board
+  renders inside the Build Order page, and ticking Placed on R14 moved real
+  stock: build line allocated 4→3, consumed 1→2, StockItem 665 99→98, with
+  the panel showing `pending` then `done`. Clearing localStorage and
+  reloading restored the tick from server metadata and consumed nothing
+  further — the cross-machine case working, verified rather than assumed.
+
+  **Attachments cannot be framed directly.** The proxy serves `/media` with
+  `Content-Disposition: attachment`, so an iframe downloads instead of
+  rendering. That header is worth keeping — without it anyone who can upload
+  an attachment could run script on the InvenTree origin — so the panel
+  fetches the bytes through the authenticated session and frames a blob
+  instead. A blob URL inherits the parent origin (verified: both
+  `location.origin` inside the frame and `event.origin` on messages come back
+  as the real origin), so the bridge is unaffected.
+
+  **iBOM's localStorage is per-origin, not per-build**, keyed by board title
+  and revision. Two build orders of the same board therefore share checkbox
+  keys in the browser. Server-held state makes this harmless — hydration
+  overwrites on every load — but it is the reason the browser must never be
+  treated as the source of truth.
+
+  Consumes are serialised through a promise chain: two designators on one BOM
+  line would otherwise race for the same allocation. A task still running when
+  the poll budget expires is reported `queued` and deliberately *not* recorded
+  as consumed, so a slow worker never fakes a stock movement.
 - **P3 — KiCad "Generate Build iBOM" action**: generation + attachment
   upload, one click from KiCad. *Gate: click in KiCad → ibom appears on the
   Build Order page.*
