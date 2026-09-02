@@ -54,7 +54,7 @@ class KicadAssemblyPlugin(SettingsMixin, UserInterfaceMixin, InvenTreePlugin):
                 "title": _("Assembly"),
                 "description": _("Place parts and consume stock"),
                 "icon": "ti:circuit-board:outline",
-                "source": self.plugin_static_file("panel.js:renderPanel"),
+                "source": self.plugin_static_file("Panel.js:renderPanel"),
                 "context": {
                     "build_id": context.get("target_id"),
                 },

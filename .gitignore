@@ -24,3 +24,7 @@ ibom_fields_*.xml
 # OS
 .DS_Store
 **/.DS_Store
+
+# Frontend build intermediates (the built Panel.js IS committed - the plugin
+# is pip-installed from git and needs it, since pip cannot run a npm build)
+inventree-plugin/frontend/node_modules/
