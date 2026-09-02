@@ -5,6 +5,48 @@ shipped and its design record now lives permanently in the repo at
 `scripts/inventree/ibom_inventree_integration_plan.md`. This is a new,
 larger feature building on top of it.)*
 
+## Where this is up to (2026-09-02)
+
+Everything through P4's core is built, pushed, and verified as far as it can be
+without a human clicking things in KiCad.
+
+| | State |
+|---|---|
+| P0 repo scaffold | done — github.com/samturner3/inventree-kicad-assembly |
+| S1 InvenTree panel mechanics | passed, real stock consumed |
+| S2 iBOM bridge | passed; fullscreen confirmed on mobile, desktop untested |
+| S3 KiCad environment | passed |
+| P1 build-scoped generation | passed |
+| P2 panel end-to-end | passed, incl. cross-machine restore |
+| P3 KiCad "Generate Build iBOM" | built, verified headlessly — **GUI click untested** |
+| P4 "Sync BOM" | core built and dry-run — **dialog untested**, LCSC endpoint not written |
+
+**Next, in order:**
+
+1. **Try the two KiCad actions** (Tools → External Plugins). The plugin is
+   symlinked into `~/Documents/KiCad/10.0/3rdparty/plugins/` and credentials
+   are in `~/.config/inventree-kicad-assembly.env`. Neither wx dialog has ever
+   been shown on screen.
+2. **Check fullscreen on desktop** in the Assembly panel.
+3. **Add `find-or-create` to `inventree-lcsc-import`** — a change in the
+   *scripts* repo, not this one. `core/lcsc.py` documents the contract it
+   probes for. Until then the create-from-LCSC button is greyed out with the
+   reason, which is the intended graceful behaviour.
+4. **P5**: docs, install guide, publishing.
+
+**Careful with variants.** The design includes Pro-only sensors (U6, U7). A
+sync run against the HF assembly wants to *add* them, which would pollute a
+variant that deliberately omits them. The action warns, but it is a real
+footgun.
+
+**Test fixtures still in InvenTree, delete when done:** parts 650
+`ZZ-TEST-COMPONENT` / 651 `ZZ-TEST-ASSEMBLY`, BOM item 172, StockItem 665,
+build 5 `BO-0004`. Note BOM item 172's reference was repointed to real board
+designators (C2,C12,R14,R20,C13) so the real board render could be tested
+against fake stock. Also: `ENABLE_PLUGINS_INTERFACE` was turned on globally,
+and BO-0003 has one real consume against it from S1 (line 69-ish) plus the
+panel test on BO-0004.
+
 ## Context
 
 Sam's physical assembly workflow uses InteractiveHtmlBom (iBOM) to click
