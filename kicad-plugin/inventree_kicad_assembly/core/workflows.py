@@ -4,7 +4,7 @@ tested from a terminal."""
 import os
 import tempfile
 
-from . import generate, ibom_xml
+from . import bom_sync, generate, ibom_xml, matching, schematic, schematic_bom
 
 ATTACHMENT_SUFFIX = ".ibom.html"
 
@@ -91,3 +91,95 @@ def generate_and_upload(client, board, pcb_path, build_pk, progress=None):
         ibom_xml.format_notes(notes, fields),
     ]
     return attachment, summary
+
+
+IPN_SYMBOL_FIELD = "InvenTree_IPN"
+
+
+def prepare_sync(client, pcb_path, progress=None):
+    """Read the schematic and resolve every symbol. Nothing is written.
+
+    Returns (matches, sch_path). The caller reviews these -- in the dialog, or
+    by printing them -- before anything is applied, so a sync is always seen
+    before it happens.
+    """
+    def say(msg):
+        if progress:
+            progress(msg)
+
+    sch_path = schematic_bom.schematic_for_board(pcb_path)
+    say("Reading the schematic…")
+    rows = schematic_bom.read_bom(sch_path)
+    if not rows:
+        raise schematic_bom.SchematicError("The schematic has no components.")
+
+    say(f"Matching {len(rows)} symbols against InvenTree…")
+    matches = matching.Matcher(client).match_rows(rows)
+    return matches, sch_path
+
+
+def apply_sync(client, assembly_pk, matches, sch_path, sheets=None,
+               remove_orphans=False, write_back_ipns=True, dry_run=False,
+               progress=None):
+    """Write the BOM, then write resolved IPNs back onto the symbols.
+
+    The write-back is what makes later syncs supplier-independent: once a
+    symbol carries its IPN, matching it needs no LCSC code, no MPN and no
+    manual pick.
+    """
+    def say(msg):
+        if progress:
+            progress(msg)
+
+    say("Working out what changes…")
+    changes = bom_sync.plan(client, assembly_pk, matches)
+
+    applied, errors = [], []
+    if not dry_run:
+        say("Updating the BOM in InvenTree…")
+        applied, errors = bom_sync.apply(
+            client, assembly_pk, changes, remove_orphans=remove_orphans
+        )
+
+    written = []
+    if write_back_ipns:
+        updates = {
+            m.ref: {IPN_SYMBOL_FIELD: m.ipn}
+            for m in matches if m.needs_ipn_writeback
+        }
+        if updates:
+            say(f"Writing {len(updates)} IPNs back to the schematic…")
+            for sheet in sheets or _sheets_for(sch_path):
+                written.extend(schematic.write_fields(sheet, updates, dry_run=dry_run))
+
+    return {
+        "changes": changes,
+        "applied": applied,
+        "errors": errors,
+        "written_back": written,
+    }
+
+
+def _sheets_for(sch_path):
+    """Every sheet in a design, following Sheetfile references.
+
+    A hierarchy can span directories -- this project keeps three of its four
+    sheets in ../base-schematic -- so globbing one folder would miss symbols.
+    """
+    import re
+
+    seen, queue, out = set(), [os.path.abspath(sch_path)], []
+    while queue:
+        path = queue.pop()
+        if path in seen or not os.path.isfile(path):
+            continue
+        seen.add(path)
+        out.append(path)
+        try:
+            with open(path, encoding="utf-8") as f:
+                text = f.read()
+        except OSError:
+            continue
+        for ref in re.findall(r'\(property "Sheetfile" "([^"]+)"', text):
+            queue.append(os.path.normpath(os.path.join(os.path.dirname(path), ref)))
+    return out

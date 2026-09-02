@@ -14,6 +14,7 @@ import pcbnew
 
 from .core.client import InvenTreeClient, InvenTreeError
 from .core.settings import load_settings, settings_help
+from .core import bom_sync, lcsc, matching, workflows
 from .core.workflows import build_choices, generate_and_upload
 from .version import version
 
@@ -141,9 +142,94 @@ class SyncBomAction(_BaseAction):
         self.show_toolbar_button = False
 
     def run(self):
-        _message(
-            "Not built yet — this is phase P4.\n\n"
-            "Until then the assembly's BOM has to exist in InvenTree already "
-            "before a build iBOM can be generated.",
-            self.name,
+        wx = _wx()
+        board = pcbnew.GetBoard()
+        pcb_path = board.GetFileName()
+        if not pcb_path:
+            raise InvenTreeError("Save the board before syncing its BOM.")
+
+        client = self.client()
+
+        # Which assembly is this design? Offered rather than guessed: picking
+        # the wrong variant would write this board's parts into another
+        # product's BOM.
+        assemblies = [
+            p for p in client.rows("/api/part/", {"assembly": "true", "active": "true"})
+        ]
+        if not assemblies:
+            raise InvenTreeError("No assembly parts found in InvenTree.")
+        labels = [f"{p.get('IPN') or ''} {p.get('name','')}".strip() for p in assemblies]
+
+        chooser = wx.SingleChoiceDialog(
+            None,
+            "Update which assembly's BOM from this design?\n\n"
+            "Take care with variants: a design that includes parts another "
+            "variant leaves out will add them to whichever assembly is chosen.",
+            "InvenTree: Sync BOM",
+            labels,
         )
+        try:
+            if chooser.ShowModal() != wx.ID_OK:
+                return
+            assembly = assemblies[chooser.GetSelection()]
+            assembly_label = labels[chooser.GetSelection()]
+        finally:
+            chooser.Destroy()
+
+        busy = wx.BusyInfo("Reading the schematic and matching against InvenTree…")
+        try:
+            matches, sch_path = workflows.prepare_sync(client, pcb_path)
+            changes = bom_sync.plan(client, assembly["pk"], matches)
+            creator = lcsc.LcscCreator(client)
+            creator.available  # probe now, while the busy indicator is up
+        finally:
+            del busy
+
+        from .review_dialog import ReviewDialog
+
+        dialog = ReviewDialog(None, matches, changes, creator, assembly_label)
+        try:
+            if dialog.ShowModal() != wx.ID_OK:
+                return
+            write_back = dialog.write_back.GetValue()
+            remove_orphans = dialog.remove_orphans.GetValue()
+            to_create = set(dialog.to_create)
+        finally:
+            dialog.Destroy()
+
+        created, create_errors = [], []
+        for match in matches:
+            if match.ref not in to_create:
+                continue
+            try:
+                part = creator.create(match.row["sku"])
+                if part:
+                    match.resolve(part, matching.BY_CREATE)
+                    created.append(match.ref)
+            except Exception as e:
+                create_errors.append(f"{match.ref}: {e}")
+
+        result = workflows.apply_sync(
+            client, assembly["pk"], matches, sch_path,
+            remove_orphans=remove_orphans, write_back_ipns=write_back,
+        )
+
+        counts = bom_sync.summarise(result["changes"])
+        lines = [
+            f"{assembly_label}",
+            "",
+            f"BOM lines added: {counts.get('create', 0)}, "
+            f"updated: {counts.get('update', 0)}, "
+            f"unchanged: {counts.get('unchanged', 0)}",
+            f"IPNs written back to symbols: {len(result['written_back'])}",
+        ]
+        if created:
+            lines.append(f"Created from LCSC: {', '.join(created)}")
+        if create_errors:
+            lines.append("Could not create: " + "; ".join(create_errors))
+        if result["errors"]:
+            lines.append("Errors: " + "; ".join(f"{c.ipn}: {e}" for c, e in result["errors"]))
+        if result["written_back"]:
+            lines += ["", "The schematic was modified — review the diff before committing."]
+
+        _message("\n".join(lines), self.name)
