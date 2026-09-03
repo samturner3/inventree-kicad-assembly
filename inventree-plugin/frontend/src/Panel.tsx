@@ -8,10 +8,13 @@ import {
   emptyState,
   fetchAttachmentUrl,
   fetchBuildLines,
+  findConsumedStock,
   findIbomAttachment,
   loadState,
   saveState,
+  unconsume,
   type BuildLine,
+  type ConsumedRecord,
   type PanelState,
   type PluginContext,
 } from "./inventree";
@@ -19,12 +22,18 @@ import {
 /** Which checkbox column means "this part is now on the board". */
 const PLACED = "placed";
 
-type Status = "pending" | "done" | "queued" | "error";
+type Status = "pending" | "done" | "queued" | "error" | "returned";
 
 interface Entry {
   ref: string;
   status: Status;
   message?: string;
+}
+
+/** An untick waiting to be told whether it should move stock back. */
+interface UndoPrompt {
+  ref: string;
+  record: ConsumedRecord;
 }
 
 function StatusPill({ status }: { status: Status }) {
@@ -33,6 +42,7 @@ function StatusPill({ status }: { status: Status }) {
     done: "#2f9e44",
     queued: "#1971c2",
     error: "#e03131",
+    returned: "#868e96",
   };
   return (
     <span
@@ -58,6 +68,7 @@ function AssemblyPanel({ context }: { context: PluginContext }) {
   const [lines, setLines] = useState<BuildLine[]>([]);
   const [state, setState] = useState<PanelState>(emptyState());
   const [entries, setEntries] = useState<Entry[]>([]);
+  const [undos, setUndos] = useState<UndoPrompt[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [frameReady, setFrameReady] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -156,16 +167,29 @@ function AssemblyPanel({ context }: { context: PluginContext }) {
 
         setEntry(ref, "pending");
         try {
-          const { taskId, buildItem } = await consumeOne(context, buildId, line);
-          const outcome = await awaitTask(context, taskId);
+          const ticket = await consumeOne(context, buildId, line);
+          const outcome = await awaitTask(context, ticket.taskId);
 
           if (outcome === "success") {
             setEntry(ref, "done");
+            // Only findable now that the task has run, and only while this
+            // designator is the last thing consumed -- hence the serialised
+            // queue this runs inside.
+            const stockItem = await findConsumedStock(context, buildId, ticket);
             await persist({
               ...stateRef.current,
               consumed: {
                 ...stateRef.current.consumed,
-                [ref]: { build_item: buildItem, at: new Date().toISOString() },
+                [ref]: {
+                  build_item: ticket.buildItem,
+                  at: new Date().toISOString(),
+                  stock_item: stockItem,
+                  line: ticket.line,
+                  quantity: ticket.quantity,
+                  location: ticket.location,
+                  location_name: ticket.locationName,
+                  part_name: ticket.partName,
+                },
               },
             });
           } else if (outcome === "pending") {
@@ -176,6 +200,32 @@ function AssemblyPanel({ context }: { context: PluginContext }) {
           } else {
             setEntry(ref, "error", "consume task failed");
           }
+        } catch (e: any) {
+          setEntry(ref, "error", e?.message ?? String(e));
+        }
+      });
+    },
+    [context, buildId, persist, setEntry]
+  );
+
+  /**
+   * Put a consumed unit back, and forget it was ever consumed.
+   *
+   * Queued behind the consumes so an undo cannot overtake the consume it is
+   * undoing, and so the stock-item diff that identifies a consume is never
+   * racing an un-consume of the same part.
+   */
+  const undoDesignator = useCallback(
+    (ref: string, record: ConsumedRecord) => {
+      setUndos((prev) => prev.filter((u) => u.ref !== ref));
+      queueRef.current = queueRef.current.then(async () => {
+        setEntry(ref, "pending", "returning stock…");
+        try {
+          await unconsume(context, buildId, record);
+          setEntry(ref, "returned", `back in ${record.location_name ?? "stock"}`);
+          const consumed = { ...stateRef.current.consumed };
+          delete consumed[ref];
+          await persist({ ...stateRef.current, consumed });
         } catch (e: any) {
           setEntry(ref, "error", e?.message ?? String(e));
         }
@@ -221,11 +271,24 @@ function AssemblyPanel({ context }: { context: PluginContext }) {
         checkboxes: { ...current.checkboxes, [checkbox]: [...ticked] },
       });
 
-      // Only ticking Placed moves stock. Unticking does not put stock back:
-      // that would need a reversal InvenTree has no endpoint for, so the
-      // consumed record stands and the box is cosmetic once spent.
-      if (checkbox.toLowerCase() === PLACED && checkState === "checked") {
-        for (const ref of refs) consumeDesignator(ref);
+      // Ticking Placed consumes; unticking asks first. An untick is usually a
+      // mis-tap, in which case the stock should go back -- but it can also mean
+      // a part was genuinely removed from the board, where it should not. The
+      // panel does not get to guess between those, so it asks.
+      if (checkbox.toLowerCase() === PLACED) {
+        if (checkState === "checked") {
+          for (const ref of refs) consumeDesignator(ref);
+        } else {
+          const pending = refs
+            .map((ref) => ({ ref, record: current.consumed[ref] }))
+            .filter((u) => u.record) as UndoPrompt[];
+          if (pending.length) {
+            setUndos((prev) => [
+              ...pending.filter((u) => !prev.some((p) => p.ref === u.ref)),
+              ...prev,
+            ]);
+          }
+        }
       }
     }
 
@@ -320,6 +383,45 @@ function AssemblyPanel({ context }: { context: PluginContext }) {
           </span>
         ))}
       </div>
+
+      {undos.map(({ ref, record }) => (
+        <div
+          key={ref}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+            flexWrap: "wrap",
+            padding: "8px 12px",
+            borderRadius: 4,
+            // Translucent rather than a flat fill, so it reads on the light
+            // page and on the dark fullscreen ground alike.
+            border: "1px solid #f59f00",
+            background: "rgba(245, 159, 0, 0.12)",
+          }}
+        >
+          <span style={{ fontSize: 13 }}>
+            <code>{ref}</code>{" "}
+            <strong>{record.part_name ?? "this part"}</strong> — un-consume{" "}
+            {record.quantity ?? 1} and return it to{" "}
+            <strong>{record.location_name ?? "stock"}</strong>?
+          </span>
+          <span style={{ display: "flex", gap: 6, marginLeft: "auto" }}>
+            <button
+              onClick={() => undoDesignator(ref, record)}
+              style={{ padding: "4px 10px", cursor: "pointer", fontWeight: 600 }}
+            >
+              Un-consume
+            </button>
+            <button
+              onClick={() => setUndos((prev) => prev.filter((u) => u.ref !== ref))}
+              style={{ padding: "4px 10px", cursor: "pointer" }}
+            >
+              Just untick
+            </button>
+          </span>
+        </div>
+      ))}
 
       <iframe
         ref={frameRef}

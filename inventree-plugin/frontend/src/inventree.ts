@@ -31,12 +31,33 @@ export interface BuildLine {
   part_detail?: { IPN?: string; name?: string };
 }
 
+/**
+ * What one consume did, kept so it can be undone.
+ *
+ * Consuming splits the placed quantity off into a stock item of its own and
+ * points it at the build, so undoing needs that item's pk -- which the consume
+ * response does not give, since the work happens in a background task. It is
+ * discovered afterwards by diffing this build's consumed stock.
+ */
+export interface ConsumedRecord {
+  build_item: number;
+  at: string;
+  /** the stock item the consume created; null when it could not be identified */
+  stock_item?: number | null;
+  line?: number;
+  quantity?: number;
+  /** where the stock came from, so an undo can put it back there */
+  location?: number | null;
+  location_name?: string;
+  part_name?: string;
+}
+
 /** Per-designator state, held on the server so a build survives changing machines. */
 export interface PanelState {
   /** checkbox name -> designators ticked, mirroring iBOM's own columns */
   checkboxes: Record<string, string[]>;
   /** designators whose stock has actually been consumed, with the allocation used */
-  consumed: Record<string, { build_item: number; at: string }>;
+  consumed: Record<string, ConsumedRecord>;
 }
 
 export const emptyState = (): PanelState => ({ checkboxes: {}, consumed: {} });
@@ -150,11 +171,36 @@ export async function saveState(
  * Returns the background task id -- /consume/ is asynchronous, so the stock has
  * not moved yet when this resolves.
  */
+export interface ConsumeTicket {
+  taskId: string;
+  buildItem: number;
+  line: number;
+  part: number;
+  location: number | null;
+  locationName: string;
+  partName: string;
+  quantity: number;
+  /** stock already consumed by this build for this part, before this call */
+  consumedBefore: number[];
+}
+
+/** Stock items this build has consumed of one part. */
+async function consumedStock(
+  ctx: PluginContext,
+  buildId: number | string,
+  part: number
+): Promise<number[]> {
+  const r = await ctx.api.get(
+    `/api/stock/?consumed_by=${buildId}&part=${part}&limit=1000`
+  );
+  return unwrap(r.data).map((s: any) => Number(s.pk));
+}
+
 export async function consumeOne(
   ctx: PluginContext,
   buildId: number | string,
   line: BuildLine
-): Promise<{ taskId: string; buildItem: number }> {
+): Promise<ConsumeTicket> {
   const r = await ctx.api.get(`/api/build/item/?build_line=${line.pk}&limit=100`);
   const allocations = unwrap(r.data).filter((a: any) => Number(a.quantity) > 0);
   if (allocations.length === 0) {
@@ -162,11 +208,107 @@ export async function consumeOne(
   }
   const alloc = allocations[0];
 
+  // Where this unit is coming from, read before it moves. An undo has to put
+  // it back somewhere, and the consume itself clears the location.
+  const source = await ctx.api.get(
+    `/api/stock/${alloc.stock_item}/?location_detail=true`
+  );
+  const part = Number(source.data?.part);
+  const consumedBefore = await consumedStock(ctx, buildId, part);
+
   const res = await ctx.api.post(`/api/build/${buildId}/consume/`, {
     items: [{ build_item: alloc.pk, quantity: "1" }],
     notes: "Placed during PCB assembly (kicad-assembly panel)",
   });
-  return { taskId: res.data?.task_id, buildItem: alloc.pk };
+
+  const loc = source.data?.location_detail;
+  return {
+    taskId: res.data?.task_id,
+    buildItem: alloc.pk,
+    line: line.pk,
+    part,
+    location: source.data?.location ?? null,
+    locationName: loc?.pathstring || loc?.name || "no location",
+    partName: line.part_detail?.IPN || line.part_detail?.name || `part ${part}`,
+    quantity: 1,
+    consumedBefore,
+  };
+}
+
+/**
+ * Which stock item the consume produced, found by difference.
+ *
+ * The consume either splits a new item off the allocation or, when the
+ * allocation used the whole item, consumes that item itself -- so the one
+ * reliable identifier is whatever is newly marked consumed for this part.
+ * Consumes are serialised by the caller, which is what makes the diff safe.
+ * Returns null if that is not exactly one item, in which case the undo is
+ * offered no guess rather than a wrong one.
+ */
+export async function findConsumedStock(
+  ctx: PluginContext,
+  buildId: number | string,
+  ticket: ConsumeTicket
+): Promise<number | null> {
+  const before = new Set(ticket.consumedBefore);
+  const added = (await consumedStock(ctx, buildId, ticket.part)).filter(
+    (pk) => !before.has(pk)
+  );
+  return added.length === 1 ? added[0] : null;
+}
+
+/**
+ * Put a consumed unit back: the exact inverse of what the consume did.
+ *
+ * InvenTree has no un-consume endpoint, so this reverses the three effects by
+ * hand -- return the stock item, decrement the line's consumed count, restore
+ * the allocation. Ordered so that the most important record is fixed first: if
+ * a later step fails, the stock is at least back on the shelf, and the caller
+ * is told exactly which steps did land.
+ *
+ * The returned unit stays a stock item of its own rather than merging back
+ * into the item it was split from. /api/stock/merge/ refuses allocated stock,
+ * and re-allocating is the more important half of the reversal -- so the bin
+ * ends up holding two correct rows instead of one.
+ */
+export async function unconsume(
+  ctx: PluginContext,
+  buildId: number | string,
+  record: ConsumedRecord
+): Promise<void> {
+  if (!record.stock_item) {
+    throw new Error("the consumed stock item was never identified, so this cannot be undone here");
+  }
+  const quantity = record.quantity ?? 1;
+  const done: string[] = [];
+
+  try {
+    await ctx.api.patch(`/api/stock/${record.stock_item}/`, {
+      consumed_by: null,
+      location: record.location ?? null,
+    });
+    done.push("returned the stock");
+
+    if (record.line) {
+      const line = await ctx.api.get(`/api/build/line/${record.line}/`);
+      const consumed = Math.max(0, Number(line.data?.consumed ?? 0) - quantity);
+      await ctx.api.patch(`/api/build/line/${record.line}/`, { consumed });
+      done.push("corrected the consumed count");
+
+      await ctx.api.post(`/api/build/${buildId}/allocate/`, {
+        items: [
+          { build_line: record.line, stock_item: record.stock_item, quantity },
+        ],
+      });
+    }
+  } catch (e: any) {
+    const detail = e?.message ?? String(e);
+    throw new Error(
+      done.length
+        ? `${detail} (already done: ${done.join(", ")} — finish the rest in InvenTree)`
+        : detail
+    );
+  }
 }
 
 /**
