@@ -140,9 +140,11 @@ IPN_SYMBOL_FIELD = "InvenTree_IPN"
 def prepare_sync(client, pcb_path, variant="", assembly_pk=None, progress=None):
     """Read the schematic and resolve every symbol. Nothing is written.
 
-    Returns (matches, sch_path, excluded). The caller reviews these -- in the
-    dialog, or by printing them -- before anything is applied, so a sync is
-    always seen before it happens.
+    Returns (matches, sch_path, excluded, matcher). The caller reviews these --
+    in the dialog, or by printing them -- before anything is applied, so a sync
+    is always seen before it happens. The matcher comes back because it holds
+    every InvenTree part already, which is what lets the dialog offer an
+    unrestricted pick without another round trip.
 
     `excluded` holds the symbols this variant does not fit, which never reach
     InvenTree, and are returned only so the review can say so out loud. They
@@ -187,12 +189,12 @@ def prepare_sync(client, pcb_path, variant="", assembly_pk=None, progress=None):
         resolved = matcher.match_rows([row], suggest_unmatched=False)[0]
         row["part_pk"] = resolved.part["pk"] if resolved.matched else None
 
-    return matches, sch_path, excluded
+    return matches, sch_path, excluded, matcher
 
 
 def apply_sync(client, assembly_pk, matches, sch_path, sheets=None,
                remove_orphans=False, write_back_ipns=True, dry_run=False,
-               progress=None):
+               excluded=None, progress=None):
     """Write the BOM, then write resolved IPNs back onto the symbols.
 
     The write-back is what makes later syncs supplier-independent: once a
@@ -204,7 +206,7 @@ def apply_sync(client, assembly_pk, matches, sch_path, sheets=None,
             progress(msg)
 
     say("Working out what changes…")
-    changes = bom_sync.plan(client, assembly_pk, matches)
+    changes = bom_sync.plan(client, assembly_pk, matches, excluded=excluded)
 
     applied, errors = [], []
     if not dry_run:

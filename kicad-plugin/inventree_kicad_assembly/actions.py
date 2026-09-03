@@ -286,7 +286,7 @@ class SyncBomAction(_BaseAction):
         # a thread: on the main thread the event loop cannot paint and KiCad
         # just beachballs, which looks like a hang.
         def work(report):
-            matches, sch_path, excluded = workflows.prepare_sync(
+            matches, sch_path, excluded, matcher = workflows.prepare_sync(
                 client, pcb_path, variant=variant,
                 assembly_pk=assembly["pk"], progress=report,
             )
@@ -296,25 +296,37 @@ class SyncBomAction(_BaseAction):
             report("Checking for the LCSC import plugin…")
             creator = lcsc.LcscCreator(client)
             creator.available  # probe here rather than from the dialog
-            return matches, sch_path, changes, creator, excluded
+            return (matches, sch_path, changes, creator, excluded,
+                    list(matcher.parts.values()))
 
         prepared = run_with_progress("InvenTree: Sync BOM", work)
         if prepared is CANCELLED:
             return
-        matches, sch_path, changes, creator, excluded = prepared
+        matches, sch_path, changes, creator, excluded, parts = prepared
 
         from .review_dialog import ReviewDialog
 
         dialog = ReviewDialog(None, matches, changes, creator, assembly_label,
-                              excluded=excluded)
+                              excluded=excluded, parts=parts)
         try:
             if dialog.ShowModal() != wx.ID_OK:
                 return
             write_back = dialog.write_back.GetValue()
             remove_orphans = dialog.remove_orphans.GetValue()
             to_create = set(dialog.to_create)
+            ignored = set(dialog.ignored)
         finally:
             dialog.Destroy()
+
+        # Ignored symbols leave the sync entirely -- no BOM line, and no IPN
+        # written back onto a symbol the user has said not to track.
+        if ignored:
+            excluded = list(excluded) + [
+                dict(m.row, part_pk=m.part["pk"] if m.matched else None,
+                     excluded="ignored in this sync")
+                for m in matches if m.ref in ignored
+            ]
+            matches = [m for m in matches if m.ref not in ignored]
 
         created, create_errors = [], []
         for match in matches:
@@ -331,6 +343,7 @@ class SyncBomAction(_BaseAction):
         result = workflows.apply_sync(
             client, assembly["pk"], matches, sch_path,
             remove_orphans=remove_orphans, write_back_ipns=write_back,
+            excluded=excluded,
         )
 
         workflows.remember_pairing(client, assembly["pk"], pcb_path, variant)
@@ -344,6 +357,8 @@ class SyncBomAction(_BaseAction):
             f"unchanged: {counts.get('unchanged', 0)}",
             f"IPNs written back to symbols: {len(result['written_back'])}",
         ]
+        if ignored:
+            lines.append(f"Ignored: {', '.join(sorted(ignored))}")
         if created:
             lines.append(f"Created from LCSC: {', '.join(created)}")
         if create_errors:

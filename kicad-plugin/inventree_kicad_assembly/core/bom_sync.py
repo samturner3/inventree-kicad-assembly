@@ -91,11 +91,15 @@ def plan(client, assembly_pk, matches, excluded=None):
         else:
             inherited.setdefault(line["sub_part"], line)
 
-    # Designators the design deliberately does not fit, by part.
+    # Designators deliberately left out, by part -- DNP in this variant, or
+    # ignored by hand in the review. Each row says which in its own words.
     unfitted = {}
     for row in excluded or []:
         if row.get("part_pk"):
-            unfitted.setdefault(row["part_pk"], []).append(row.get("ref", ""))
+            entry = unfitted.setdefault(
+                row["part_pk"], {"why": row.get("excluded") or ORPHAN_NOT_FITTED,
+                                 "refs": []})
+            entry["refs"].append(row.get("ref", ""))
 
     changes = []
     for pk, entry in grouped.items():
@@ -146,7 +150,8 @@ def plan(client, assembly_pk, matches, excluded=None):
             continue
         detail = line.get("sub_part_detail") or {}
         if pk in unfitted:
-            reason = f"{ORPHAN_NOT_FITTED}: {','.join(sorted(unfitted[pk]))}"
+            entry = unfitted[pk]
+            reason = f"{entry['why']}: {','.join(sorted(entry['refs']))}"
         else:
             reason = ORPHAN_NO_SYMBOL
         changes.append(BomChange(
