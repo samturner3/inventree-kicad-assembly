@@ -36,10 +36,22 @@ end. The Sync BOM dialog is the last unexercised piece.
    reason, which is the intended graceful behaviour.
 3. **P5**: docs, install guide, publishing.
 
-Panel 0.1.3 fixed the two things that first real run showed: the "no
-interactive BOM attached" notice flashing up before the board loaded (loading
-and absent were the same null), and fullscreen hiding the status line (it
-fullscreened the iframe, not the panel).
+**Un-consume (added 2026-09-03).** InvenTree has no un-consume endpoint, but
+consuming has exactly three reversible effects — it splits the placed quantity
+into a stock item pointed at the build, increments `BuildLine.consumed`
+(a stored field, not an annotation), and reduces the allocation. Unticking
+Placed now offers to reverse all three; verified as a round trip on BO-0004.
+Two things had to be captured at consume time, because the reversal cannot
+derive them later: the source location (consuming clears it) and which stock
+item the consume produced (the response is only a task id, so it is found by
+diffing this build's consumed stock afterwards). The returned unit stays a
+stock item of its own — `/api/stock/merge/` refuses allocated stock, and
+re-allocating matters more than tidiness.
+
+Panel 0.1.3 fixed the two things the first real run showed: the "no interactive
+BOM attached" notice flashing up before the board loaded (loading and absent
+were the same null), and fullscreen hiding the status line (it fullscreened the
+iframe, not the panel).
 
 **Careful with variants.** The design includes Pro-only sensors (U6, U7). A
 sync run against the HF assembly wants to *add* them, which would pollute a
@@ -47,8 +59,9 @@ variant that deliberately omits them. The action warns, but it is a real
 footgun.
 
 **Test fixtures still in InvenTree, delete when done:** parts 650
-`ZZ-TEST-COMPONENT` / 651 `ZZ-TEST-ASSEMBLY`, BOM item 172, StockItem 665,
-build 5 `BO-0004`. Note BOM item 172's reference was repointed to real board
+`ZZ-TEST-COMPONENT` / 651 `ZZ-TEST-ASSEMBLY`, BOM item 172, StockItems 665 plus
+the qty-1 items the consume/undo tests split off it (667, 671, and 668-670
+still consumed), build 5 `BO-0004`. Note BOM item 172's reference was repointed to real board
 designators (C2,C12,R14,R20,C13) so the real board render could be tested
 against fake stock. Also: `ENABLE_PLUGINS_INTERFACE` was turned on globally,
 and BO-0003 has one real consume against it from S1 (line 69-ish) plus the
