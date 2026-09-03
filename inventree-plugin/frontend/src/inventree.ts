@@ -8,6 +8,8 @@
  * clicked.
  */
 
+import { PROTOCOL } from "./bridge";
+
 export const PLUGIN_KEY = "kicad-assembly";
 /**
  * Written by the KiCad plugin at generation time, read-only here.
@@ -45,6 +47,19 @@ export interface BuildLine {
   allocated: number;
   consumed: number;
   part_detail?: { IPN?: string; name?: string };
+}
+
+/** One stock allocation against a build line. */
+export interface Allocation {
+  pk: number;
+  build_line: number;
+  quantity: number | string;
+  location_detail?: { pathstring?: string; name?: string };
+}
+
+/** The two columns InvenTree owns, per designator. */
+export interface LiveFields {
+  [ref: string]: { IPN: string; Location: string };
 }
 
 /**
@@ -99,6 +114,68 @@ export function designatorIndex(lines: BuildLine[]): Map<string, BuildLine> {
   return index;
 }
 
+export async function fetchAllocations(ctx: PluginContext, buildId: number | string) {
+  const r = await ctx.api.get(
+    `/api/build/item/?build=${buildId}&location_detail=true&limit=1000`
+  );
+  return unwrap(r.data) as Allocation[];
+}
+
+/**
+ * IPN and Location per designator, from this build's current allocations.
+ *
+ * These are the two columns InvenTree owns. They move whenever stock is
+ * allocated or a bin changes -- long after the board file was generated -- so
+ * the panel recomputes them rather than trusting what KiCad baked in. Anything
+ * else in that file describes the board, and only KiCad can change it.
+ *
+ * The algorithm mirrors fields_for_build() in the KiCad plugin's
+ * core/ibom_xml.py, whose docstring is the canonical description: walk a
+ * line's allocations largest first and spend each one's quantity across
+ * successive designators, so a line needing 7 with 5 in one bin and 2 in
+ * another says which five come from where instead of naming one bin for all
+ * seven. Designators past the allocated quantity get a blank Location.
+ */
+export function fieldsForBuild(lines: BuildLine[], allocations: Allocation[]): LiveFields {
+  const byLine = new Map<number, Allocation[]>();
+  for (const a of allocations) {
+    const list = byLine.get(a.build_line) ?? [];
+    list.push(a);
+    byLine.set(a.build_line, list);
+  }
+
+  const fields: LiveFields = {};
+  for (const line of lines) {
+    const refs = (line.reference || "")
+      .split(",")
+      .map((r) => r.trim())
+      .filter(Boolean);
+    if (!refs.length) continue;
+
+    const ipn = line.part_detail?.IPN || "";
+    const queue = [...(byLine.get(line.pk) ?? [])].sort(
+      (a, b) => Number(b.quantity) - Number(a.quantity)
+    );
+
+    const assigned: Record<string, string> = {};
+    let idx = 0;
+    for (const alloc of queue) {
+      const location =
+        alloc.location_detail?.pathstring || alloc.location_detail?.name || "";
+      for (let n = 0; n < Math.floor(Number(alloc.quantity)); n += 1) {
+        if (idx >= refs.length) break;
+        assigned[refs[idx]] = location;
+        idx += 1;
+      }
+    }
+
+    for (const ref of refs) {
+      fields[ref] = { IPN: ipn, Location: assigned[ref] ?? "" };
+    }
+  }
+  return fields;
+}
+
 /** The generated iBOM uploaded against this build, newest first. */
 export async function findIbomAttachment(ctx: PluginContext, buildId: number | string) {
   const r = await ctx.api.get(
@@ -151,10 +228,73 @@ export async function fetchAttachmentUrl(
  */
 export function injectState(html: string, state: PanelState): string {
   const payload = JSON.stringify({ checkboxes: state.checkboxes });
-  const tag = `<script>var IBOM_BRIDGE_STATE=${payload};</script>`;
+  const tag =
+    `<script>var IBOM_BRIDGE_STATE=${payload};</script>` + FIELD_UPDATER;
   const at = html.indexOf("<script");
   return at === -1 ? tag + html : html.slice(0, at) + tag + html.slice(at);
 }
+
+/**
+ * Applies refreshed IPN/Location inside the frame, on request from the panel.
+ *
+ * Injected here rather than shipped in the bridge (web/user.js) on purpose:
+ * the bridge is baked into each file when KiCad generates it, so a board
+ * generated before this existed could never be refreshed -- which is exactly
+ * the case this is for. Injecting means it works on every attachment already
+ * uploaded, with no regeneration.
+ *
+ * iBOM keeps its table data in pcbdata.bom.fields, a
+ * {componentIndex: [values in config.fields order]} map, and rebuilds the
+ * table from it in populateBomTable(). The designator -> index mapping comes
+ * from the same [ref, index] pairs the checkbox events already use.
+ *
+ * The listener is registered immediately but only touches those globals when a
+ * message arrives, by which time the page has loaded.
+ */
+const FIELD_UPDATER = `<script>
+(function () {
+  window.addEventListener("message", function (event) {
+    var msg = event.data || {};
+    if (event.origin !== window.location.origin) return;
+    if (msg.protocol !== ${JSON.stringify(PROTOCOL)} || msg.type !== "updateFields") return;
+    var fields = (msg.payload || {}).fields || {};
+
+    var byRef = {};
+    ["both", "F", "B"].forEach(function (side) {
+      (pcbdata.bom[side] || []).forEach(function (group) {
+        (group || []).forEach(function (ref) { byRef[ref[0]] = ref[1]; });
+      });
+    });
+    var columns = {};
+    (config.fields || []).forEach(function (name, i) { columns[name] = i; });
+
+    var changed = 0;
+    Object.keys(fields).forEach(function (ref) {
+      var i = byRef[ref];
+      var row = i === undefined ? null : pcbdata.bom.fields[i];
+      if (!row) return;
+      var values = fields[ref] || {};
+      Object.keys(values).forEach(function (name) {
+        var col = columns[name];
+        if (col !== undefined && row[col] !== values[name]) {
+          row[col] = values[name];
+          changed += 1;
+        }
+      });
+    });
+
+    // Redraws the cells. Row grouping was computed when the file was generated
+    // and is not recomputed -- Location is not a grouping field, so what moves
+    // day to day is covered.
+    if (changed) populateBomTable();
+    window.parent.postMessage(
+      { protocol: ${JSON.stringify(PROTOCOL)}, type: "fieldsUpdated",
+        payload: { changed: changed } },
+      window.location.origin
+    );
+  });
+})();
+</script>`;
 
 export async function loadState(ctx: PluginContext, buildId: number | string): Promise<PanelState> {
   const r = await ctx.api.get(`/api/metadata/build/${buildId}/`);

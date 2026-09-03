@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { isBridgeMessage, sendHydrate, type CheckboxPayload } from "./bridge";
+import { isBridgeMessage, sendFields, sendHydrate, type CheckboxPayload } from "./bridge";
 import {
   awaitTask,
   consumeOne,
   designatorIndex,
   emptyState,
   fetchAttachmentUrl,
+  fetchAllocations,
   fetchBuildLines,
+  fieldsForBuild,
   findConsumedStock,
   findIbomAttachment,
   loadBoardContext,
@@ -73,6 +75,7 @@ function AssemblyPanel({ context }: { context: PluginContext }) {
   const [entries, setEntries] = useState<Entry[]>([]);
   const [undos, setUndos] = useState<UndoPrompt[]>([]);
   const [board, setBoard] = useState<BoardContext>({});
+  const [refreshed, setRefreshed] = useState<string>("");
   const notFittedRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     notFittedRef.current = new Set(board.not_fitted ?? []);
@@ -118,6 +121,35 @@ function AssemblyPanel({ context }: { context: PluginContext }) {
     },
     [context, buildId, setEntry]
   );
+
+  /**
+   * Re-read IPN and Location from the build and push them into the frame.
+   *
+   * The generated file is a snapshot: a board generated before its order was
+   * issued has no allocations, so every Location is blank, and it stays blank
+   * however much stock is later allocated. Those two columns belong to
+   * InvenTree, so the panel keeps them current -- no regeneration, and no
+   * KiCad, which has nothing to contribute at this point.
+   */
+  const refreshFields = useCallback(async () => {
+    try {
+      const [ln, allocations] = await Promise.all([
+        fetchBuildLines(context, buildId),
+        fetchAllocations(context, buildId),
+      ]);
+      setLines(ln);
+      const fields = fieldsForBuild(ln, allocations);
+      // A part this variant does not fit has no line at all; keep it saying so
+      // rather than blanking it back to looking like a failed lookup.
+      for (const ref of notFittedRef.current) {
+        fields[ref] = { IPN: "DNP", Location: fields[ref]?.Location ?? "" };
+      }
+      sendFields(frameRef.current, fields, origin);
+      setRefreshed(new Date().toLocaleTimeString());
+    } catch (e: any) {
+      setEntry("(refresh)", "error", e?.message ?? String(e));
+    }
+  }, [context, buildId, origin, setEntry]);
 
   // Initial load: the board to embed, the BOM lines to resolve designators
   // against, and whatever state the last session left on the server.
@@ -189,6 +221,9 @@ function AssemblyPanel({ context }: { context: PluginContext }) {
 
           if (outcome === "success") {
             setEntry(ref, "done");
+            // Consuming spends an allocation, so the Location column can
+            // change under us -- and it is what the next part is picked from.
+            void refreshFields();
             // Only findable now that the task has run, and only while this
             // designator is the last thing consumed -- hence the serialised
             // queue this runs inside.
@@ -248,7 +283,7 @@ function AssemblyPanel({ context }: { context: PluginContext }) {
         }
       });
     },
-    [context, buildId, persist, setEntry]
+    [context, buildId, persist, setEntry, refreshFields]
   );
 
   // Bridge. Bound once; everything it needs comes from refs.
@@ -259,6 +294,7 @@ function AssemblyPanel({ context }: { context: PluginContext }) {
 
       if (type === "ready") {
         setFrameReady(true);
+        void refreshFields();
         if (payload?.seeded) {
           // State was injected before the document loaded, so the frame is
           // already showing this build correctly and events can be trusted now.
@@ -311,7 +347,7 @@ function AssemblyPanel({ context }: { context: PluginContext }) {
 
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [origin, persist, consumeDesignator]);
+  }, [origin, persist, consumeDesignator, refreshFields]);
 
   useEffect(() => {
     return () => {
@@ -381,6 +417,13 @@ function AssemblyPanel({ context }: { context: PluginContext }) {
         <button onClick={toggleFullscreen} style={{ padding: "4px 10px", cursor: "pointer" }}>
           {fullscreen ? "Exit fullscreen" : "Fullscreen"}
         </button>
+        <button
+          onClick={() => void refreshFields()}
+          style={{ padding: "4px 10px", cursor: "pointer" }}
+          title="Re-read IPN and stock location from this build's allocations"
+        >
+          Refresh from InvenTree
+        </button>
         <span style={{ fontSize: 13, opacity: 0.8 }}>
           {!frameUrl
             ? "fetching board…"
@@ -393,6 +436,7 @@ function AssemblyPanel({ context }: { context: PluginContext }) {
           {placedCount} placed · {consumedCount} consumed
           {board.variant ? ` · ${board.variant} variant` : ""}
           {board.not_fitted?.length ? ` · ${board.not_fitted.length} not fitted` : ""}
+          {refreshed ? ` · locations as at ${refreshed}` : ""}
         </span>
         {entries.slice(0, 3).map((e) => (
           <span key={e.ref} style={{ fontSize: 12, display: "flex", gap: 5, alignItems: "center" }}>

@@ -42,3 +42,15 @@ export function sendHydrate(
     targetOrigin
   );
 }
+
+/** Push refreshed IPN/Location into the frame; it redraws its own table. */
+export function sendFields(
+  frame: HTMLIFrameElement | null,
+  fields: Record<string, { IPN: string; Location: string }>,
+  targetOrigin: string
+) {
+  frame?.contentWindow?.postMessage(
+    { protocol: PROTOCOL, type: "updateFields", payload: { fields } },
+    targetOrigin
+  );
+}
