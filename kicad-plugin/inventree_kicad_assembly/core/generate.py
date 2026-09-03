@@ -63,11 +63,19 @@ def _import_ibom():
     )
 
 
-def generate_ibom(board, pcb_path, extra_data_file, dest_dir, name="ibom"):
+def generate_ibom(board, pcb_path, extra_data_file, dest_dir, name="ibom",
+                  variant=""):
     """Render an ibom.html for `board`, returning the path written.
 
     `board` is a live pcbnew BOARD. `extra_data_file` is the XML produced from
     the build order, which supplies the IPN and Location columns.
+
+    `variant` is a KiCad 10 design variant name. iBOM resolves it itself --
+    `PcbnewParser.get_footprint_fields` calls `FOOTPRINT.GetVariant(...)` and
+    applies both the variant's field overrides and its DNP flag -- so this only
+    has to say which one. Resolving it by hand would mean reimplementing that,
+    and an earlier attempt to do so applied the DNP but silently dropped the
+    field overrides, showing default Values on a variant board.
     """
     ibom, Config, PcbnewParser, version = _import_ibom()
 
@@ -81,6 +89,8 @@ def generate_ibom(board, pcb_path, extra_data_file, dest_dir, name="ibom"):
     config.show_fields = ["Value", "Footprint", IPN_FIELD, LOCATION_FIELD]
     config.group_fields = ["Value", "Footprint", IPN_FIELD]
     config.checkboxes = ",".join(REQUIRED_CHECKBOXES)
+    if variant:
+        config.kicad_variant = variant
     config.open_browser = False
     config.bom_dest_dir = dest_dir
     config.bom_name_format = name

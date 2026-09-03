@@ -21,6 +21,7 @@ _STRATEGY_COLOUR = {
     matching.BY_IPN: wx.Colour(47, 158, 68),
     matching.BY_MPN: wx.Colour(25, 113, 194),
     matching.BY_SKU: wx.Colour(25, 113, 194),
+    matching.BY_BOM: wx.Colour(25, 113, 194),
     matching.BY_CREATE: wx.Colour(245, 159, 0),
     matching.BY_MANUAL: wx.Colour(245, 159, 0),
     matching.UNMATCHED: wx.Colour(224, 49, 49),
@@ -282,7 +283,8 @@ class ReviewDialog(wx.Dialog):
         panel = wx.Panel(parent)
         listing = wx.ListCtrl(panel, style=wx.LC_REPORT)
         for i, (title, width) in enumerate([
-            ("Change", 110), ("Part", 240), ("Qty", 60), ("Designators", 480),
+            ("Change", 110), ("Part", 220), ("Qty", 55), ("Designators", 300),
+            ("Why", 280),
         ]):
             listing.InsertColumn(i, title, width=width)
 
@@ -291,22 +293,36 @@ class ReviewDialog(wx.Dialog):
             bom_sync.BomChange.UPDATE: "update",
             bom_sync.BomChange.UNCHANGED: "unchanged",
             bom_sync.BomChange.ORPHAN: "not in design",
+            bom_sync.BomChange.INHERITED: "inherited",
         }
         for c in self.changes:
             idx = listing.InsertItem(listing.GetItemCount(), explain[c.kind])
             listing.SetItem(idx, 1, c.ipn or c.name)
             listing.SetItem(idx, 2, str(c.quantity))
             listing.SetItem(idx, 3, c.reference)
-            if c.kind == bom_sync.BomChange.ORPHAN:
+            # Why, for the two kinds where the answer decides what to do.
+            if c.kind == bom_sync.BomChange.INHERITED:
+                listing.SetItem(idx, 4, f"from {c.source}"
+                                + (f" — {c.reason}" if c.reason else ""))
+                listing.SetItemTextColour(idx, wx.Colour(121, 80, 242))
+            elif c.kind == bom_sync.BomChange.ORPHAN:
+                listing.SetItem(idx, 4, c.reason)
                 listing.SetItemTextColour(idx, wx.Colour(224, 49, 49))
             elif c.kind == bom_sync.BomChange.UNCHANGED:
                 listing.SetItemTextColour(idx, wx.Colour(130, 130, 130))
 
         note = wx.StaticText(panel, label=(
-            "'not in design' lines are in InvenTree but unmatched here. Some are "
-            "deliberate (the bare PCB, hand-added hardware); others just mean a "
-            "symbol above did not match. They are kept unless you tick the box."
+            "'not in design' lines are in InvenTree but unmatched here, and the "
+            "Why column says which kind: 'not fitted in this variant' means the "
+            "design dropped it, while 'no symbol in this design' is usually "
+            "deliberate — the bare PCB, hand-added hardware — or a symbol above "
+            "that failed to match. They are kept unless you tick the box.\n\n"
+            "'inherited' lines come from a template above this assembly. They "
+            "already count towards a build, so they are never added here, and "
+            "never removed from here either: that would take them off every "
+            "sibling variant."
         ))
+        note.Wrap(940)
         sizer = wx.BoxSizer(wx.VERTICAL)
         sizer.Add(listing, 1, wx.EXPAND | wx.ALL, 5)
         sizer.Add(note, 0, wx.ALL, 5)

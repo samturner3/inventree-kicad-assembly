@@ -189,6 +189,17 @@ class SyncBomAction(_BaseAction):
 
         if existing:
             labels = [assemblies.label_for(p) for p in existing]
+            # Whichever assembly this board and variant went to last time.
+            remembered = None
+            board_name = os.path.basename(pcb_path or "")
+            for i, part in enumerate(existing):
+                pairing = workflows.pairing_for(client, part["pk"])
+                if (pairing.get("board") == board_name
+                        and (pairing.get("variant") or "") == (variant or "")):
+                    remembered = i
+                    labels[i] += "   ← last synced from here"
+                    break
+
             chooser = wx.SingleChoiceDialog(
                 None,
                 "Assemblies in InvenTree — pick the one this design builds"
@@ -200,6 +211,8 @@ class SyncBomAction(_BaseAction):
                 "InvenTree: Sync BOM — choose an assembly",
                 [self.NEW_ASSEMBLY] + labels,
             )
+            if remembered is not None:
+                chooser.SetSelection(remembered + 1)
             try:
                 if chooser.ShowModal() != wx.ID_OK:
                     return None
@@ -274,10 +287,12 @@ class SyncBomAction(_BaseAction):
         # just beachballs, which looks like a hang.
         def work(report):
             matches, sch_path, excluded = workflows.prepare_sync(
-                client, pcb_path, variant=variant, progress=report
+                client, pcb_path, variant=variant,
+                assembly_pk=assembly["pk"], progress=report,
             )
             report("Working out what changes…")
-            changes = bom_sync.plan(client, assembly["pk"], matches)
+            changes = bom_sync.plan(client, assembly["pk"], matches,
+                                    excluded=excluded)
             report("Checking for the LCSC import plugin…")
             creator = lcsc.LcscCreator(client)
             creator.available  # probe here rather than from the dialog
@@ -317,6 +332,8 @@ class SyncBomAction(_BaseAction):
             client, assembly["pk"], matches, sch_path,
             remove_orphans=remove_orphans, write_back_ipns=write_back,
         )
+
+        workflows.remember_pairing(client, assembly["pk"], pcb_path, variant)
 
         counts = bom_sync.summarise(result["changes"])
         lines = [

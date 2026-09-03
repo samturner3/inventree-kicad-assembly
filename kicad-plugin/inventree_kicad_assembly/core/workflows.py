@@ -1,6 +1,7 @@
 """What the menu actions actually do, kept free of wx so it can be run and
 tested from a terminal."""
 
+import datetime
 import os
 import tempfile
 
@@ -8,6 +9,11 @@ from . import (bom_sync, generate, ibom_xml, matching, schematic, schematic_bom,
                variants)
 
 ATTACHMENT_SUFFIX = ".ibom.html"
+
+#: Metadata keys. Deliberately separate from the panel's own "kicad-assembly",
+#: which it rewrites wholesale every time a checkbox moves.
+BOARD_METADATA_KEY = "kicad-assembly:board"
+SYNC_METADATA_KEY = "kicad-assembly:sync"
 
 # InvenTree build status codes.
 CANCELLED = 30
@@ -58,8 +64,9 @@ def generate_and_upload(client, board, pcb_path, build_pk, variant="",
     reference = build.get("reference") or f"build-{build_pk}"
 
     if variant:
-        # iBOM reads IsDNP(), which ignores the variant, so the fitted set has
-        # to be stamped onto a copy of the board before it is rendered.
+        # Two halves, and both are needed: the stamped copy fixes the fitted
+        # set (iBOM can only add DNP, not clear it), and generate_ibom sets
+        # config.kicad_variant so the variant's field overrides apply too.
         say(f"Applying the {variant} variant…")
         board = variants.apply_to_board(pcb_path, variant)
 
@@ -91,7 +98,8 @@ def generate_and_upload(client, board, pcb_path, build_pk, variant="",
 
     say("Rendering the interactive BOM…")
     html_path = generate.generate_ibom(
-        board, pcb_path, extra_data_file=xml_path, dest_dir=workdir, name="ibom"
+        board, pcb_path, extra_data_file=xml_path, dest_dir=workdir, name="ibom",
+        variant=variant,
     )
 
     say(f"Uploading to {reference}…")
@@ -105,6 +113,18 @@ def generate_and_upload(client, board, pcb_path, build_pk, variant="",
         replace_suffix=ATTACHMENT_SUFFIX,
     )
 
+    # Tell the panel which designators this board does not fit, so that
+    # ticking one reads as "not fitted" rather than as a failed lookup.
+    try:
+        client.set_metadata("build", build_pk, BOARD_METADATA_KEY, {
+            "variant": variant,
+            "not_fitted": sorted(unfitted),
+            "generated_at": datetime.datetime.now().isoformat(timespec="seconds"),
+        })
+    except Exception:
+        # Cosmetic only -- never fail a generation over it.
+        pass
+
     summary = [
         f"{reference}: {len(fields)} designators"
         + (f", {variant} variant" if variant else "")
@@ -117,7 +137,7 @@ def generate_and_upload(client, board, pcb_path, build_pk, variant="",
 IPN_SYMBOL_FIELD = "InvenTree_IPN"
 
 
-def prepare_sync(client, pcb_path, variant="", progress=None):
+def prepare_sync(client, pcb_path, variant="", assembly_pk=None, progress=None):
     """Read the schematic and resolve every symbol. Nothing is written.
 
     Returns (matches, sch_path, excluded). The caller reviews these -- in the
@@ -125,7 +145,13 @@ def prepare_sync(client, pcb_path, variant="", progress=None):
     always seen before it happens.
 
     `excluded` holds the symbols this variant does not fit, which never reach
-    InvenTree, and are returned only so the review can say so out loud.
+    InvenTree, and are returned only so the review can say so out loud. They
+    are matched too, despite not being sent: knowing which part a DNP symbol
+    would have been is what lets an orphaned BOM line be explained as "you
+    stopped fitting this" rather than reported as unexplained drift.
+
+    `assembly_pk` lets matching fall back to that assembly's existing BOM, so
+    it has to be chosen before this runs.
     """
     def say(msg):
         if progress:
@@ -152,7 +178,15 @@ def prepare_sync(client, pcb_path, variant="", progress=None):
         )
 
     say(f"Matching {len(rows)} symbols against InvenTree…")
-    matches = matching.Matcher(client).match_rows(rows, progress=progress)
+    matcher = matching.Matcher(client)
+    matches = matcher.match_rows(rows, progress=progress, assembly_pk=assembly_pk)
+
+    # Cheap now that the tables are in memory, and it is what makes an orphan
+    # explainable.
+    for row in excluded:
+        resolved = matcher.match_rows([row], suggest_unmatched=False)[0]
+        row["part_pk"] = resolved.part["pk"] if resolved.matched else None
+
     return matches, sch_path, excluded
 
 
@@ -196,6 +230,28 @@ def apply_sync(client, assembly_pk, matches, sch_path, sheets=None,
         "errors": errors,
         "written_back": written,
     }
+
+
+def remember_pairing(client, assembly_pk, pcb_path, variant):
+    """Record which board and variant this assembly is synced from.
+
+    Pairing the wrong variant with the wrong assembly is the one mistake a
+    per-variant workflow can still make, and it is silent -- the sync succeeds
+    and writes a variant's parts into another product. Remembering the last
+    pairing lets the chooser preselect it next time.
+    """
+    try:
+        client.set_metadata("part", assembly_pk, SYNC_METADATA_KEY, {
+            "board": os.path.basename(pcb_path or ""),
+            "variant": variant,
+            "synced_at": datetime.datetime.now().isoformat(timespec="seconds"),
+        })
+    except Exception:
+        pass
+
+
+def pairing_for(client, assembly_pk):
+    return client.get_metadata("part", assembly_pk, SYNC_METADATA_KEY)
 
 
 def _sheets_for(sch_path):

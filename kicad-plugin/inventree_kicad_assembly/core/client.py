@@ -131,6 +131,26 @@ class InvenTreeClient:
     def get_bom(self, assembly_pk):
         return self.rows("/api/bom/", {"part": assembly_pk, "sub_part_detail": "true"})
 
+    def get_metadata(self, model, pk, key):
+        """One plugin key out of a record's metadata, or {}."""
+        try:
+            payload = self.get(f"/api/metadata/{model}/{pk}/")
+        except Exception:
+            return {}
+        return ((payload or {}).get("metadata") or {}).get(key) or {}
+
+    def set_metadata(self, model, pk, key, value):
+        """Write one plugin key, leaving anything else on the record alone.
+
+        The endpoint merges at the top level, so writing our own key whole does
+        not disturb another plugin's -- but everything under one key is
+        replaced, which is why the panel's state and the board context this
+        writes live under separate keys.
+        """
+        return self._request(
+            "PATCH", f"/api/metadata/{model}/{pk}/", data={"metadata": {key: value}}
+        )
+
     def get_stock_for_part(self, part_pk):
         return self.rows("/api/stock/", {"part": part_pk})
 

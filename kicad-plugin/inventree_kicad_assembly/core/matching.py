@@ -12,10 +12,14 @@ stock during a build.
      also supplier-agnostic.
   3. Supplier SKU -- what the original script did, kept as a fallback and
      parameterised by supplier rather than hardcoded to LCSC.
-  4. Create from LCSC -- for a part designed in but never purchased, so
+  4. The designator's existing line in this assembly's BOM -- somebody already
+     decided, by hand, that R10 is this part. Exact and supplier-agnostic, and
+     it liquidates itself: the write-back stamps the IPN onto the symbol, so
+     the next sync resolves it at step 1 and never looks here again.
+  5. Create from LCSC -- for a part designed in but never purchased, so
      InvenTree has never heard of it. Offered only when the
      inventree-lcsc-import plugin is installed; see lcsc.py.
-  5. Manual pick, in the review dialog.
+  6. Manual pick, in the review dialog.
 
 Whatever resolves a match, automatic or human, the resulting IPN is written
 back onto the symbol so strategy 1 handles it next time.
@@ -25,6 +29,7 @@ back onto the symbol so strategy 1 handles it next time.
 BY_IPN = "ipn"
 BY_MPN = "mpn"
 BY_SKU = "sku"
+BY_BOM = "bom"
 BY_CREATE = "create-from-lcsc"
 BY_MANUAL = "manual"
 UNMATCHED = "unmatched"
@@ -33,6 +38,7 @@ STRATEGY_LABELS = {
     BY_IPN: "IPN on symbol",
     BY_MPN: "MPN",
     BY_SKU: "supplier SKU",
+    BY_BOM: "this assembly's BOM",
     BY_CREATE: "created from LCSC",
     BY_MANUAL: "chosen by hand",
     UNMATCHED: "no match",
@@ -94,6 +100,7 @@ class Matcher:
         self._by_ipn = {}     # KEY -> [part, ...]
         self._by_mpn = {}
         self._by_sku = {}
+        self._by_designator = {}   # only when an assembly is named
         self._loaded = False
 
     # --- the tables ----------------------------------------------------
@@ -129,6 +136,26 @@ class Matcher:
                 _index(self._by_sku, row.get("SKU"), part)
 
         self._loaded = True
+
+    def load_assembly_bom(self, assembly_pk):
+        """Index the target assembly's current BOM by reference designator.
+
+        Read as a record of decisions a person already made: a BOM line saying
+        `RES-0603-100R` covers `R10,R11,R12,R13` is somebody having identified
+        those four symbols by hand. Consulting it costs one request and rescues
+        exactly the symbols that carry no supplier data of their own.
+        """
+        self._by_designator = {}
+        if not assembly_pk:
+            return
+        for line in self.client.get_bom(assembly_pk):
+            part = self.parts.get(line.get("sub_part")) or line.get("sub_part_detail")
+            if not part:
+                continue
+            for ref in (line.get("reference") or "").split(","):
+                ref = ref.strip()
+                if ref:
+                    self._by_designator.setdefault(ref, part)
 
     # --- individual lookups -------------------------------------------
 
@@ -197,8 +224,11 @@ class Matcher:
 
     # --- a pass over a whole board --------------------------------------
 
-    def match_rows(self, rows, suggest_unmatched=True, progress=None):
+    def match_rows(self, rows, suggest_unmatched=True, progress=None,
+                   assembly_pk=None):
         self.load(progress)
+        if assembly_pk:
+            self.load_assembly_bom(assembly_pk)
 
         matches = []
         for n, row in enumerate(rows, 1):
@@ -234,6 +264,16 @@ class Matcher:
                         "parts — pick one"
                     )
                     match.candidates = ambiguous
+
+            if not match.matched:
+                # Last of the automatic strategies: whatever this assembly's
+                # BOM already says this designator is.
+                part = self._by_designator.get(match.ref)
+                if part:
+                    match.resolve(
+                        part, BY_BOM,
+                        note=f"{match.ref} is already this part on the BOM",
+                    )
 
             if not match.matched and not match.candidates and suggest_unmatched:
                 match.candidates = self.suggest(row)

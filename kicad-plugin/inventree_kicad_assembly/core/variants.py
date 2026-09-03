@@ -14,7 +14,16 @@ Two traps worth knowing, both found by testing rather than reading:
   validated here against what the design actually declares.
 * `FOOTPRINT.IsDNP()` always reports the *default* variant, even after
   `BOARD.SetCurrentVariant()`. The variant-resolved answer comes from
-  `GetDNPForVariant()`, which is what `apply_to_board` uses.
+  `GetDNPForVariant()`, which is what `not_fitted` uses.
+
+* iBOM's own variant support is **additive only** for DNP. Its parser marks a
+  footprint DNP if `IsDNP()` says so, then marks it DNP again if the variant
+  says so -- but never clears the base flag. KiCad's variant model works the
+  other way round in practice: the base design is minimal and a variant
+  un-DNPs the parts it adds, which is exactly what this design's "Pro" does.
+  So `config.kicad_variant` alone renders the base fitted set. `apply_to_board`
+  resolves DNP properly; the config field is still set alongside it, because
+  that is what applies the variant's per-symbol *field* overrides.
 """
 
 import json
@@ -96,10 +105,14 @@ def not_fitted(board, variant=DEFAULT):
 def apply_to_board(pcb_path, variant):
     """A private copy of the board with a variant's fitted set stamped on.
 
-    iBOM reads `IsDNP()`, which ignores the variant, so the variant has to be
-    resolved into the flags it reads. Deliberately a freshly loaded copy: the
-    board object KiCad has open is the user's document, and editing it to
-    render a BOM would dirty their design.
+    Needed because iBOM reads `IsDNP()`, which is the base design's answer, and
+    its own variant handling can only add DNP, never remove it (see above). The
+    resolved flags are written onto footprints so that everything downstream --
+    iBOM's table, its render, `not_fitted()` -- agrees.
+
+    Deliberately a freshly loaded copy: the board object KiCad has open is the
+    user's document, and editing it to render a BOM would leave their design
+    dirty.
     """
     import pcbnew
 
