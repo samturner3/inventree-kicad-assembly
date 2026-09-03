@@ -60,6 +60,7 @@ function AssemblyPanel({ context }: { context: PluginContext }) {
   const [entries, setEntries] = useState<Entry[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [frameReady, setFrameReady] = useState(false);
+  const [loading, setLoading] = useState(true);
 
   // Until the iframe has been given the server's state, an inbound checkbox
   // event cannot be told apart from a tick being restored -- acting on one
@@ -125,6 +126,11 @@ function AssemblyPanel({ context }: { context: PluginContext }) {
         }
       } catch (e: any) {
         if (!cancelled) setLoadError(e?.message ?? String(e));
+      } finally {
+        // Held until the board bytes are in hand, not merely until the
+        // attachment is known: dropping it earlier is what made the "nothing
+        // attached" notice flash up before the board appeared.
+        if (!cancelled) setLoading(false);
       }
     })();
     return () => { cancelled = true; };
@@ -233,11 +239,34 @@ function AssemblyPanel({ context }: { context: PluginContext }) {
     };
   }, [frameUrl]);
 
+  // Fullscreen is taken on the panel wrapper rather than the iframe, so the
+  // status line goes with it -- during assembly that line is the only feedback
+  // that a tick actually moved stock.
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const [fullscreen, setFullscreen] = useState(false);
+
+  useEffect(() => {
+    const onChange = () => setFullscreen(document.fullscreenElement === wrapRef.current);
+    document.addEventListener("fullscreenchange", onChange);
+    return () => document.removeEventListener("fullscreenchange", onChange);
+  }, []);
+
+  const toggleFullscreen = useCallback(() => {
+    if (document.fullscreenElement) void document.exitFullscreen();
+    else void wrapRef.current?.requestFullscreen?.();
+  }, []);
+
   const consumedCount = Object.keys(state.consumed).length;
   const placedCount = (state.checkboxes["Placed"] ?? state.checkboxes["placed"] ?? []).length;
 
   if (loadError) {
     return <div style={{ padding: 16, color: "#e03131" }}>Could not load: {loadError}</div>;
+  }
+
+  if (loading) {
+    return (
+      <div style={{ padding: 16, opacity: 0.75 }}>Loading the interactive BOM…</div>
+    );
   }
 
   if (!attachment) {
@@ -253,13 +282,24 @@ function AssemblyPanel({ context }: { context: PluginContext }) {
   }
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "75vh", gap: 8 }}>
+    <div
+      ref={wrapRef}
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        height: fullscreen ? "100vh" : "75vh",
+        gap: 8,
+        // A fullscreened element is painted on the UA's black backdrop, which
+        // the status line would otherwise have to be read against.
+        background: fullscreen ? "var(--mantine-color-body, #fff)" : undefined,
+        color: fullscreen ? "var(--mantine-color-text, inherit)" : undefined,
+        padding: fullscreen ? 8 : 0,
+        boxSizing: "border-box",
+      }}
+    >
       <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-        <button
-          onClick={() => frameRef.current?.requestFullscreen?.()}
-          style={{ padding: "4px 10px", cursor: "pointer" }}
-        >
-          Fullscreen
+        <button onClick={toggleFullscreen} style={{ padding: "4px 10px", cursor: "pointer" }}>
+          {fullscreen ? "Exit fullscreen" : "Fullscreen"}
         </button>
         <span style={{ fontSize: 13, opacity: 0.8 }}>
           {!frameUrl
