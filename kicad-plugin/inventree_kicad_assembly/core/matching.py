@@ -73,107 +73,194 @@ class Match:
 
 
 class Matcher:
-    """Resolves rows against InvenTree, caching lookups across a whole board.
+    """Resolves rows against InvenTree.
 
-    A board has many identical passives, so the same IPN/MPN/SKU gets looked up
-    repeatedly; without caching a 79-symbol sync would make hundreds of round
-    trips.
+    Every table a strategy consults -- parts, manufacturer parts, supplier
+    parts -- is fetched once and indexed in memory rather than queried per
+    symbol. That is what makes a sync quick enough to watch: done the other
+    way, a 71-symbol board issued a query per distinct IPN, MPN and SKU, then
+    up to three search queries for every row that failed to match, which is
+    two hundred-odd round trips to a remote server before the review dialog
+    could open. The whole tables cost four, and they are small -- hundreds of
+    rows, not thousands.
+
+    A side effect worth having: with every part in hand, an ambiguous key can
+    be recognised as ambiguous. A per-key query only ever saw its first result.
     """
 
     def __init__(self, client):
         self.client = client
-        self._by_ipn = {}
+        self.parts = {}       # pk -> part
+        self._by_ipn = {}     # KEY -> [part, ...]
         self._by_mpn = {}
         self._by_sku = {}
+        self._loaded = False
+
+    # --- the tables ----------------------------------------------------
+
+    def load(self, progress=None):
+        """Fetch and index everything matching needs. Idempotent."""
+        if self._loaded:
+            return
+
+        def say(msg):
+            if progress:
+                progress(msg)
+
+        say("Loading InvenTree parts…")
+        # Parameters come along for the ride because the package -- '0402',
+        # 'SOT-23' -- is the one field that lets a human tell eight similar
+        # candidates apart, and it is only reachable per-part otherwise.
+        parts = self.client.rows("/api/part/", {"parameters": "true"})
+        self.parts = {p["pk"]: p for p in parts}
+        for part in parts:
+            _index(self._by_ipn, part.get("IPN"), part)
+
+        say(f"Indexed {len(parts)} parts. Loading manufacturer numbers…")
+        for row in self.client.rows("/api/company/part/manufacturer/", {}):
+            part = self.parts.get(row.get("part"))
+            if part:
+                _index(self._by_mpn, row.get("MPN"), part)
+
+        say("Indexing supplier part numbers…")
+        for row in self.client.rows("/api/company/part/", {}):
+            part = self.parts.get(row.get("part"))
+            if part:
+                _index(self._by_sku, row.get("SKU"), part)
+
+        self._loaded = True
 
     # --- individual lookups -------------------------------------------
 
+    def _lookup(self, index, value):
+        """The part for a key, or (None, others) when the key is not unique.
+
+        Two parts sharing an MPN is a data problem in InvenTree, but guessing
+        between them here would consume the wrong part's stock during a build.
+        The ambiguity is handed to the review dialog as candidates instead.
+        """
+        self.load()
+        found = index.get((value or "").strip().upper(), [])
+        if len(found) == 1:
+            return found[0], []
+        return None, found
+
     def find_by_ipn(self, ipn):
-        if ipn not in self._by_ipn:
-            rows = self.client.rows("/api/part/", {"IPN": ipn})
-            exact = [p for p in rows if (p.get("IPN") or "").upper() == ipn.upper()]
-            self._by_ipn[ipn] = exact[0] if exact else None
-        return self._by_ipn[ipn]
+        return self._lookup(self._by_ipn, ipn)[0]
 
     def find_by_mpn(self, mpn):
-        if mpn not in self._by_mpn:
-            rows = self.client.rows("/api/company/part/manufacturer/", {"MPN": mpn})
-            exact = [m for m in rows if (m.get("MPN") or "").upper() == mpn.upper()]
-            self._by_mpn[mpn] = self._part(exact[0].get("part")) if exact else None
-        return self._by_mpn[mpn]
+        return self._lookup(self._by_mpn, mpn)[0]
 
     def find_by_sku(self, sku):
-        if sku not in self._by_sku:
-            rows = self.client.rows("/api/company/part/", {"SKU": sku})
-            exact = [s for s in rows if (s.get("SKU") or "").upper() == sku.upper()]
-            self._by_sku[sku] = self._part(exact[0].get("part")) if exact else None
-        return self._by_sku[sku]
-
-    def _part(self, pk):
-        if pk is None:
-            return None
-        try:
-            return self.client.get_part(pk)
-        except Exception:
-            return None
+        return self._lookup(self._by_sku, sku)[0]
 
     # --- suggestions ---------------------------------------------------
 
     def suggest(self, row, limit=8):
         """Candidates for a row the automatic strategies could not place.
 
-        Search terms only. These are shown for a human to choose from and are
-        never applied automatically, which is what makes a loose search safe
-        here where an automatic fuzzy match would not be.
+        Ranked by how many of the row's own terms appear in the part's text.
+        These are shown for a human to choose from and are never applied
+        automatically, which is what makes a loose match safe here where an
+        automatic one would not be.
         """
-        terms = [t for t in (row.get("mpn"), row.get("value"), row.get("description")) if t]
-        seen, out = set(), []
-        for term in terms:
-            try:
-                rows = self.client.rows("/api/part/", {"search": term, "limit": limit})
-            except Exception:
+        self.load()
+        terms = [
+            str(t).strip().upper()
+            for t in (row.get("mpn"), row.get("value"), row.get("description"))
+            if t and str(t).strip()
+        ]
+        if not terms:
+            return []
+
+        # A candidate in the same package as the symbol is far more likely to
+        # be the right one, so it sorts above an equally-worded part in the
+        # wrong size. A hint for ranking only -- never enough to match on.
+        footprint = str(row.get("footprint") or "").upper()
+
+        scored = []
+        for part in self.parts.values():
+            haystack = " ".join(
+                str(part.get(f) or "")
+                for f in ("name", "description", "keywords", "IPN")
+            ).upper()
+            score = sum(1 for term in terms if term in haystack)
+            if not score:
                 continue
-            for part in rows:
-                if part["pk"] in seen:
-                    continue
-                seen.add(part["pk"])
-                out.append(part)
-                if len(out) >= limit:
-                    return out
-        return out
+            package = package_of(part).upper()
+            if package and footprint and package in footprint:
+                score += 2
+            scored.append((score, str(part.get("name") or ""), part))
+
+        scored.sort(key=lambda s: (-s[0], s[1]))
+        return [part for _score, _name, part in scored[:limit]]
 
     # --- a pass over a whole board --------------------------------------
 
-    def match_rows(self, rows, suggest_unmatched=True):
+    def match_rows(self, rows, suggest_unmatched=True, progress=None):
+        self.load(progress)
+
         matches = []
-        for row in rows:
+        for n, row in enumerate(rows, 1):
+            if progress and (n == 1 or n % 10 == 0):
+                progress(f"Matching symbol {n} of {len(rows)}…")
             match = Match(row)
 
             if row.get("ipn"):
-                part = self.find_by_ipn(row["ipn"])
+                part, ambiguous = self._lookup(self._by_ipn, row["ipn"])
                 if part:
                     match.resolve(part, BY_IPN)
+                elif ambiguous:
+                    match.note = f"IPN {row['ipn']} is on {len(ambiguous)} parts"
+                    match.candidates = ambiguous
                 else:
                     # A stale IPN is worth flagging rather than silently
                     # falling through: it usually means the part was renamed
                     # or removed in InvenTree.
                     match.note = f"IPN {row['ipn']} on the symbol is not in InvenTree"
 
-            if not match.matched and row.get("mpn"):
-                part = self.find_by_mpn(row["mpn"])
+            for field, index, strategy in (
+                ("mpn", self._by_mpn, BY_MPN),
+                ("sku", self._by_sku, BY_SKU),
+            ):
+                if match.matched or not row.get(field):
+                    continue
+                part, ambiguous = self._lookup(index, row[field])
                 if part:
-                    match.resolve(part, BY_MPN)
+                    match.resolve(part, strategy)
+                elif ambiguous:
+                    match.note = (
+                        f"{field.upper()} {row[field]} matches {len(ambiguous)} "
+                        "parts — pick one"
+                    )
+                    match.candidates = ambiguous
 
-            if not match.matched and row.get("sku"):
-                part = self.find_by_sku(row["sku"])
-                if part:
-                    match.resolve(part, BY_SKU)
-
-            if not match.matched and suggest_unmatched:
+            if not match.matched and not match.candidates and suggest_unmatched:
                 match.candidates = self.suggest(row)
 
             matches.append(match)
         return matches
+
+
+#: Parameter names that describe a component's physical package.
+_PACKAGE_PARAMETERS = ("package", "footprint", "case", "mounting type")
+
+
+def package_of(part):
+    """The part's package parameter, or '' -- e.g. '0402', 'SOT-23-3'."""
+    for parameter in part.get("parameters") or []:
+        name = ((parameter.get("template_detail") or {}).get("name") or "").lower()
+        if name in _PACKAGE_PARAMETERS:
+            return str(parameter.get("data") or "").strip()
+    return ""
+
+
+def _index(index, key, part):
+    """Add a part under a normalised key, keeping every part that shares it."""
+    key = (key or "").strip().upper()
+    if not key:
+        return
+    index.setdefault(key, []).append(part)
 
 
 def summarise(matches):

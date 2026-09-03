@@ -4,6 +4,11 @@ Shows every symbol, not just the problems: what matched and how, what did not,
 and what will change in InvenTree. Nothing is written until this is confirmed,
 so it doubles as the dry run.
 
+Selecting a symbol also shows its KiCad fields alongside the InvenTree part it
+would be bound to, both visible while the candidate picker is in use: an
+"IPN · name" label is not enough to tell eight near-identical passives apart,
+whereas the footprint usually is.
+
 Kept apart from the headless core so that everything except the presentation
 can be exercised without wx.
 """
@@ -20,6 +25,87 @@ _STRATEGY_COLOUR = {
     matching.BY_MANUAL: wx.Colour(245, 159, 0),
     matching.UNMATCHED: wx.Colour(224, 49, 49),
 }
+
+# The row keys read_bom() produces, ordered by how much each one helps when
+# choosing between near-identical candidates -- footprint high, since that is
+# usually what separates them. Any key a row grows later is shown after these
+# rather than being silently dropped.
+_SYMBOL_FIELDS = [
+    ("ref", "Reference"),
+    ("value", "Value"),
+    ("footprint", "Footprint"),
+    ("description", "Description"),
+    ("mpn", "MPN"),
+    ("sku", "Supplier SKU"),
+    ("ipn", "IPN on symbol"),
+]
+
+# Part-dict keys worth comparing a symbol against. Only what the search already
+# returned is read: this pane redraws on every move through the picker and must
+# never cost an API call.
+_PART_FIELDS = [
+    ("IPN", "IPN"),
+    ("name", "Name"),
+    ("description", "Description"),
+    ("keywords", "Keywords"),
+    ("revision", "Revision"),
+    ("units", "Units"),
+]
+
+_PACKAGE_HINTS = ("footprint", "package", "case", "mounting")
+
+
+def _symbol_lines(row):
+    """Everything the KiCad row carries, known fields first."""
+    lines = [f"{label}: {row.get(key) or '—'}" for key, label in _SYMBOL_FIELDS]
+    known = {key for key, _ in _SYMBOL_FIELDS}
+    for key in sorted(k for k in row if k not in known):
+        value = row[key]
+        # A nested field map (should read_bom ever pass the symbol's other
+        # KiCad fields through) is worth flattening rather than printing raw.
+        if isinstance(value, dict):
+            lines += [f"{n}: {value[n]}" for n in sorted(value) if str(value[n]).strip()]
+        elif str(value).strip():
+            lines.append(f"{key}: {value}")
+    return lines
+
+
+def _part_parameters(part):
+    """(name, value) for whatever parameter detail the part dict happens to
+    carry -- empty unless the endpoint that fetched it included parameters."""
+    out = []
+    for entry in part.get("parameters") or []:
+        if not isinstance(entry, dict):
+            continue
+        template = entry.get("template_detail") or {}
+        name = template.get("name") or entry.get("template_name") or ""
+        value = str(entry.get("data") or "").strip()
+        if name and value:
+            out.append((name, f"{value} {template.get('units') or ''}".strip()))
+    return out
+
+
+def _part_lines(part):
+    """The InvenTree side of the comparison, package-ish facts first."""
+    parameters = _part_parameters(part)
+    packageish = [(n, v) for n, v in parameters
+                  if any(h in n.lower() for h in _PACKAGE_HINTS)]
+    lines = [f"{n}: {v}" for n, v in packageish]
+    lines += [f"{label}: {part[key]}" for key, label in _PART_FIELDS
+              if str(part.get(key) or "").strip()]
+
+    category = part.get("category_detail") or {}
+    category_name = category.get("pathstring") or category.get("name") or \
+        part.get("category_name") or ""
+    if category_name:
+        lines.append(f"Category: {category_name}")
+
+    stock = part.get("total_in_stock", part.get("in_stock"))
+    if stock not in (None, ""):
+        lines.append(f"In stock: {stock}")
+
+    lines += [f"{n}: {v}" for n, v in parameters if (n, v) not in packageish]
+    return lines
 
 
 class ReviewDialog(wx.Dialog):
@@ -103,6 +189,19 @@ class ReviewDialog(wx.Dialog):
         sizer = wx.BoxSizer(wx.VERTICAL)
         sizer.Add(listing, 1, wx.EXPAND | wx.ALL, 5)
 
+        # Side by side and always on screen, rather than a pop-up: the point is
+        # to read the symbol's footprint off one pane while stepping through
+        # candidates in the other. Kept short so the list still shows a useful
+        # number of rows at the dialog's default height; both panes scroll, and
+        # the dialog resizes.
+        symbol_box, self.symbol_details = self._details_pane(panel, "KiCad symbol")
+        part_box, self.part_details = self._details_pane(
+            panel, "InvenTree part (the match, or the candidate picked below)")
+        details = wx.BoxSizer(wx.HORIZONTAL)
+        details.Add(symbol_box, 1, wx.EXPAND | wx.RIGHT, 5)
+        details.Add(part_box, 1, wx.EXPAND)
+        sizer.Add(details, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 5)
+
         self.picker = wx.Choice(panel, choices=[])
         self.picker.Disable()
         assign = wx.Button(panel, label="Assign to selected symbol")
@@ -121,8 +220,20 @@ class ReviewDialog(wx.Dialog):
         sizer.Add(row, 0, wx.EXPAND | wx.ALL, 5)
 
         listing.Bind(wx.EVT_LIST_ITEM_SELECTED, self._on_select)
+        self.picker.Bind(wx.EVT_CHOICE, self._on_candidate)
+        self._show_details(None, None)
         panel.SetSizer(sizer)
         return panel
+
+    def _details_pane(self, panel, label):
+        """(sizer, control) for a read-only text pane in a labelled box."""
+        box = wx.StaticBoxSizer(wx.VERTICAL, panel, label)
+        text = wx.TextCtrl(
+            box.GetStaticBox(), size=(-1, 112),
+            style=wx.TE_MULTILINE | wx.TE_READONLY | wx.TE_BESTWRAP,
+        )
+        box.Add(text, 1, wx.EXPAND | wx.ALL, 4)
+        return box, text
 
     def _changes_page(self, parent):
         panel = wx.Panel(parent)
@@ -165,11 +276,22 @@ class ReviewDialog(wx.Dialog):
         idx = self.listing.GetFirstSelected()
         return (idx, self.matches[idx]) if idx >= 0 else (None, None)
 
+    def _show_details(self, match, part):
+        self.symbol_details.SetValue(
+            "\n".join(_symbol_lines(match.row)) if match
+            else "Select a symbol above to see its KiCad fields."
+        )
+        self.part_details.SetValue(
+            ("\n".join(_part_lines(part)) or f"Part {part.get('pk', '?')}") if part
+            else "No part yet — choose a candidate below, or create from LCSC."
+        )
+
     def _on_select(self, _event):
         _idx, match = self._selected_match()
         self.picker.Clear()
         if match is None or match.matched:
             self.picker.Disable()
+            self._show_details(match, match.part if match else None)
             return
         labels = [f"{p.get('IPN') or '—'} · {p.get('name','')}" for p in match.candidates]
         if labels:
@@ -178,6 +300,14 @@ class ReviewDialog(wx.Dialog):
             self.picker.Enable()
         else:
             self.picker.Disable()
+        self._show_details(match, match.candidates[0] if match.candidates else None)
+
+    def _on_candidate(self, _event):
+        """Keep the right-hand pane on whichever candidate is highlighted."""
+        _idx, match = self._selected_match()
+        choice = self.picker.GetSelection()
+        if match is not None and 0 <= choice < len(match.candidates):
+            self._show_details(match, match.candidates[choice])
 
     def _on_assign(self, _event):
         idx, match = self._selected_match()
@@ -188,6 +318,7 @@ class ReviewDialog(wx.Dialog):
             return
         match.resolve(match.candidates[choice], matching.BY_MANUAL)
         self._refresh_row(idx, match)
+        self._on_select(None)
 
     def _on_create(self, _event):
         idx, match = self._selected_match()

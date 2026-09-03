@@ -16,6 +16,7 @@ from .core.client import InvenTreeClient, InvenTreeError
 from .core.settings import load_settings, settings_help
 from .core import bom_sync, lcsc, matching, workflows
 from .core.workflows import build_choices, generate_and_upload
+from .progress_dialog import CANCELLED, run_with_progress
 from .version import version
 
 
@@ -176,14 +177,25 @@ class SyncBomAction(_BaseAction):
         finally:
             chooser.Destroy()
 
-        busy = wx.BusyInfo("Reading the schematic and matching against InvenTree…")
-        try:
-            matches, sch_path = workflows.prepare_sync(client, pcb_path)
+        # Exporting the BOM shells out to kicad-cli and the matching tables
+        # come over the network, so this is seconds of work at best. Run it on
+        # a thread: on the main thread the event loop cannot paint and KiCad
+        # just beachballs, which looks like a hang.
+        def work(report):
+            matches, sch_path = workflows.prepare_sync(
+                client, pcb_path, progress=report
+            )
+            report("Working out what changes…")
             changes = bom_sync.plan(client, assembly["pk"], matches)
+            report("Checking for the LCSC import plugin…")
             creator = lcsc.LcscCreator(client)
-            creator.available  # probe now, while the busy indicator is up
-        finally:
-            del busy
+            creator.available  # probe here rather than from the dialog
+            return matches, sch_path, changes, creator
+
+        prepared = run_with_progress("InvenTree: Sync BOM", work)
+        if prepared is CANCELLED:
+            return
+        matches, sch_path, changes, creator = prepared
 
         from .review_dialog import ReviewDialog
 

@@ -114,7 +114,7 @@ def prepare_sync(client, pcb_path, progress=None):
         raise schematic_bom.SchematicError("The schematic has no components.")
 
     say(f"Matching {len(rows)} symbols against InvenTree…")
-    matches = matching.Matcher(client).match_rows(rows)
+    matches = matching.Matcher(client).match_rows(rows, progress=progress)
     return matches, sch_path
 
 
