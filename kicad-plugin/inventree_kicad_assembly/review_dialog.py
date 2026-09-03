@@ -123,7 +123,7 @@ def _reference_key(reference):
 
 class ReviewDialog(wx.Dialog):
     def __init__(self, parent, matches, changes, creator, assembly_label,
-                 excluded=None, parts=None):
+                 excluded=None, parts=None, on_apply=None):
         super().__init__(
             parent, title="InvenTree: Sync BOM", size=(980, 640),
             style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER,
@@ -136,6 +136,9 @@ class ReviewDialog(wx.Dialog):
         self.parts = list(parts or [])
         #: Refs the user has ticked to leave out of this sync entirely.
         self.ignored = set()
+        #: Called with this dialog when Apply is pressed. Modeless, so the
+        #: work cannot simply follow ShowModal returning.
+        self.on_apply = on_apply
         # Rows the user asked to create from their LCSC code.
         self.to_create = set()
 
@@ -159,11 +162,25 @@ class ReviewDialog(wx.Dialog):
         self.remove_orphans.SetValue(False)
         outer.Add(self.remove_orphans, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
 
+        hint = wx.StaticText(self, label=(
+            "Ignore applies to this run only. To keep a symbol out of InvenTree "
+            "for good, tick Exclude from BOM on it in KiCad — that is the flag "
+            "for a board feature rather than a purchased part, and those symbols "
+            "never reach this dialog. Not DNP: DNP means the pad is fabricated "
+            "and left unpopulated, which says something different about the board."
+        ))
+        hint.Wrap(940)
+        hint.SetForegroundColour(wx.Colour(120, 120, 120))
+        outer.Add(hint, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
+
         buttons = wx.StdDialogButtonSizer()
-        ok = wx.Button(self, wx.ID_OK, "Apply")
-        ok.SetDefault()
-        buttons.AddButton(ok)
-        buttons.AddButton(wx.Button(self, wx.ID_CANCEL, "Cancel"))
+        self.apply_button = wx.Button(self, wx.ID_OK, "Apply")
+        self.apply_button.SetDefault()
+        self.apply_button.Bind(wx.EVT_BUTTON, self._on_apply_clicked)
+        buttons.AddButton(self.apply_button)
+        close = wx.Button(self, wx.ID_CANCEL, "Close")
+        close.Bind(wx.EVT_BUTTON, lambda _e: self.Destroy())
+        buttons.AddButton(close)
         buttons.Realize()
         outer.Add(buttons, 0, wx.ALL | wx.ALIGN_RIGHT, 10)
 
@@ -367,6 +384,25 @@ class ReviewDialog(wx.Dialog):
         sizer.Add(note, 0, wx.ALL, 5)
         panel.SetSizer(sizer)
         return panel
+
+    def _on_apply_clicked(self, _event):
+        """Modeless, so Apply does the work here rather than after ShowModal.
+
+        The dialog closes only once the work has finished and been reported --
+        leaving it open through a failure means the review is still there to
+        correct and retry from.
+        """
+        if self.on_apply is None:
+            self.Destroy()
+            return
+        self.apply_button.Disable()
+        try:
+            self.on_apply(self)
+        finally:
+            if self:
+                self.apply_button.Enable()
+        if self:
+            self.Destroy()
 
     # --- interaction ----------------------------------------------------
 

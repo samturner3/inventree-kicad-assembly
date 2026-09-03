@@ -26,6 +26,25 @@ def _wx():
     return wx
 
 
+#: Modeless dialogs the plugin has open. A KiCad ActionPlugin's Run() returns
+#: as soon as it has shown one, so without a reference here Python would
+#: collect the dialog and it would vanish mid-review.
+_OPEN_DIALOGS = []
+
+
+def _keep_alive(dialog):
+    _OPEN_DIALOGS.append(dialog)
+
+    def forget(event):
+        # EVT_WINDOW_DESTROY propagates up from every child widget, so check
+        # this is the dialog itself going away and not one of its controls.
+        if event.GetWindow() is dialog and dialog in _OPEN_DIALOGS:
+            _OPEN_DIALOGS.remove(dialog)
+        event.Skip()
+
+    dialog.Bind(_wx().EVT_WINDOW_DESTROY, forget)
+
+
 def _message(text, caption, error=False):
     wx = _wx()
     style = wx.OK | (wx.ICON_ERROR if error else wx.ICON_INFORMATION)
@@ -306,17 +325,28 @@ class SyncBomAction(_BaseAction):
 
         from .review_dialog import ReviewDialog
 
-        dialog = ReviewDialog(None, matches, changes, creator, assembly_label,
-                              excluded=excluded, parts=parts)
-        try:
-            if dialog.ShowModal() != wx.ID_OK:
-                return
-            write_back = dialog.write_back.GetValue()
-            remove_orphans = dialog.remove_orphans.GetValue()
-            to_create = set(dialog.to_create)
-            ignored = set(dialog.ignored)
-        finally:
-            dialog.Destroy()
+        # Shown modeless, not modal: a modal dialog is application-modal, and
+        # KiCad's schematic and PCB windows belong to the same application --
+        # so reviewing a match was exactly when you could not go and look at
+        # the symbol. Run() therefore returns with the dialog still open, and
+        # the module keeps a reference so Python does not collect it.
+        dialog = ReviewDialog(
+            None, matches, changes, creator, assembly_label,
+            excluded=excluded, parts=parts,
+            on_apply=lambda d: self._apply(
+                d, client, assembly, assembly_label, matches, sch_path,
+                excluded, creator, pcb_path, variant),
+        )
+        _keep_alive(dialog)
+        dialog.Show()
+
+    def _apply(self, dialog, client, assembly, assembly_label, matches,
+               sch_path, excluded, creator, pcb_path, variant):
+        """Called by the review dialog's Apply button, on the main thread."""
+        write_back = dialog.write_back.GetValue()
+        remove_orphans = dialog.remove_orphans.GetValue()
+        to_create = set(dialog.to_create)
+        ignored = set(dialog.ignored)
 
         # Ignored symbols leave the sync entirely -- no BOM line, and no IPN
         # written back onto a symbol the user has said not to track.
@@ -328,25 +358,33 @@ class SyncBomAction(_BaseAction):
             ]
             matches = [m for m in matches if m.ref not in ignored]
 
-        created, create_errors = [], []
-        for match in matches:
-            if match.ref not in to_create:
-                continue
-            try:
-                part = creator.create(match.row["sku"])
-                if part:
-                    match.resolve(part, matching.BY_CREATE)
-                    created.append(match.ref)
-            except Exception as e:
-                create_errors.append(f"{match.ref}: {e}")
+        def work(report):
+            created, create_errors = [], []
+            to_make = [m for m in matches if m.ref in to_create]
+            for n, match in enumerate(to_make, 1):
+                report(f"Creating {match.ref} from LCSC ({n} of {len(to_make)})…")
+                try:
+                    part = creator.create(match.row["sku"])
+                    if part:
+                        match.resolve(part, matching.BY_CREATE)
+                        created.append(match.ref)
+                except Exception as e:
+                    create_errors.append(f"{match.ref}: {e}")
 
-        result = workflows.apply_sync(
-            client, assembly["pk"], matches, sch_path,
-            remove_orphans=remove_orphans, write_back_ipns=write_back,
-            excluded=excluded,
-        )
+            result = workflows.apply_sync(
+                client, assembly["pk"], matches, sch_path,
+                remove_orphans=remove_orphans, write_back_ipns=write_back,
+                excluded=excluded, progress=report,
+            )
+            report("Recording which assembly this variant syncs to…")
+            workflows.remember_pairing(client, assembly["pk"], pcb_path, variant)
+            return result, created, create_errors
 
-        workflows.remember_pairing(client, assembly["pk"], pcb_path, variant)
+        outcome = run_with_progress("InvenTree: Sync BOM — applying", work,
+                                    parent=dialog)
+        if outcome is CANCELLED:
+            return
+        result, created, create_errors = outcome
 
         counts = bom_sync.summarise(result["changes"])
         lines = [
