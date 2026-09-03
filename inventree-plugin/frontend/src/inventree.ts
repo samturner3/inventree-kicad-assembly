@@ -239,22 +239,31 @@ export function injectState(html: string, state: PanelState): string {
  * Pins the BOM table's header row while the list scrolls.
  *
  * iBOM scrolls #bomdiv (`.split { overflow-y: auto }`), so sticking the cells
- * to its top works without touching iBOM's own layout. Two details: `th`
- * inherits `position: relative` from a shared rule and has to be overridden,
- * and a sticky cell's border does not travel with it in Chrome -- hence the
- * inset shadow standing in for the bottom border.
+ * to its top works without touching iBOM's own layout.
+ *
+ * Three details, all about losing to iBOM's own rules. This block is injected
+ * ahead of the first <script>, which puts it after the stylesheet iBOM inlines
+ * in <head> -- so equal-specificity rules go to this one. `th` inherits
+ * `position: relative` from `.bom th, .bom td` and has to be overridden. The
+ * checkbox headers set it again through `.bom .bom-checkbox`, which is more
+ * specific and won, leaving those three columns scrolling while the rest
+ * stayed put -- so they need saying again, more specifically still. And a
+ * sticky cell's border does not travel with it in Chrome, hence the inset
+ * shadow standing in for the bottom border.
  *
  * Injected rather than shipped in iBOM's user.css for the same reason as the
  * field updater: user.css is baked in when KiCad generates the file, so a board
  * generated earlier would never get it.
  */
 const STICKY_HEADER = `<style>
-  .bom th {
+  .bom th,
+  .bom th.bom-checkbox,
+  .bom th.numCol {
     position: sticky;
     top: 0;
     z-index: 2;
-    box-shadow: inset 0 -1px 0 black;
   }
+  .bom th { box-shadow: inset 0 -1px 0 black; }
   .dark .bom th { box-shadow: inset 0 -1px 0 #777; }
 </style>`;
 
