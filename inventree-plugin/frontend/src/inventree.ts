@@ -9,6 +9,22 @@
  */
 
 export const PLUGIN_KEY = "kicad-assembly";
+/**
+ * Written by the KiCad plugin at generation time, read-only here.
+ *
+ * A key of its own rather than a field on PLUGIN_KEY: saveState() replaces
+ * that key wholesale on every checkbox, so anything sharing it would be gone
+ * the first time someone ticked a box.
+ */
+export const BOARD_KEY = "kicad-assembly:board";
+
+/** What the generated board says about itself. */
+export interface BoardContext {
+  variant?: string;
+  /** designators this variant does not populate */
+  not_fitted?: string[];
+  generated_at?: string;
+}
 
 export interface PluginContext {
   api: {
@@ -147,6 +163,20 @@ export async function loadState(ctx: PluginContext, buildId: number | string): P
     checkboxes: stored?.checkboxes ?? {},
     consumed: stored?.consumed ?? {},
   };
+}
+
+export async function loadBoardContext(
+  ctx: PluginContext,
+  buildId: number | string
+): Promise<BoardContext> {
+  try {
+    const r = await ctx.api.get(`/api/metadata/build/${buildId}/`);
+    return (r.data?.metadata?.[BOARD_KEY] ?? {}) as BoardContext;
+  } catch {
+    // Absent for any board generated before this existed; the panel just
+    // loses the nicety of naming unfitted parts.
+    return {};
+  }
 }
 
 export async function saveState(

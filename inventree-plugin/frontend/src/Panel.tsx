@@ -10,9 +10,11 @@ import {
   fetchBuildLines,
   findConsumedStock,
   findIbomAttachment,
+  loadBoardContext,
   loadState,
   saveState,
   unconsume,
+  type BoardContext,
   type BuildLine,
   type ConsumedRecord,
   type PanelState,
@@ -22,7 +24,7 @@ import {
 /** Which checkbox column means "this part is now on the board". */
 const PLACED = "placed";
 
-type Status = "pending" | "done" | "queued" | "error" | "returned";
+type Status = "pending" | "done" | "queued" | "error" | "returned" | "not fitted";
 
 interface Entry {
   ref: string;
@@ -43,6 +45,7 @@ function StatusPill({ status }: { status: Status }) {
     queued: "#1971c2",
     error: "#e03131",
     returned: "#868e96",
+    "not fitted": "#868e96",
   };
   return (
     <span
@@ -69,6 +72,11 @@ function AssemblyPanel({ context }: { context: PluginContext }) {
   const [state, setState] = useState<PanelState>(emptyState());
   const [entries, setEntries] = useState<Entry[]>([]);
   const [undos, setUndos] = useState<UndoPrompt[]>([]);
+  const [board, setBoard] = useState<BoardContext>({});
+  const notFittedRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    notFittedRef.current = new Set(board.not_fitted ?? []);
+  }, [board]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [frameReady, setFrameReady] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -117,15 +125,18 @@ function AssemblyPanel({ context }: { context: PluginContext }) {
     let cancelled = false;
     (async () => {
       try {
-        const [att, ln, st] = await Promise.all([
+        const [att, ln, st, ctx] = await Promise.all([
           findIbomAttachment(context, buildId),
           fetchBuildLines(context, buildId),
           loadState(context, buildId),
+          loadBoardContext(context, buildId),
         ]);
         if (cancelled) return;
         setAttachment(att);
         setLines(ln);
         setState(st);
+        setBoard(ctx);
+        notFittedRef.current = new Set(ctx.not_fitted ?? []);
         stateRef.current = st;
         if (att) {
           const url = await fetchAttachmentUrl(context, att, st);
@@ -161,7 +172,13 @@ function AssemblyPanel({ context }: { context: PluginContext }) {
 
         const line = indexRef.current.get(ref);
         if (!line) {
-          setEntry(ref, "error", "no BOM line for this designator");
+          // A part this variant does not populate has no BOM line by design.
+          // Saying so is the difference between "nothing to do" and "broken".
+          if (notFittedRef.current.has(ref)) {
+            setEntry(ref, "not fitted", "no stock consumed");
+          } else {
+            setEntry(ref, "error", "no BOM line for this designator");
+          }
           return;
         }
 
@@ -374,6 +391,8 @@ function AssemblyPanel({ context }: { context: PluginContext }) {
               : "loading board…"}
           {" · "}
           {placedCount} placed · {consumedCount} consumed
+          {board.variant ? ` · ${board.variant} variant` : ""}
+          {board.not_fitted?.length ? ` · ${board.not_fitted.length} not fitted` : ""}
         </span>
         {entries.slice(0, 3).map((e) => (
           <span key={e.ref} style={{ fontSize: 12, display: "flex", gap: 5, alignItems: "center" }}>
