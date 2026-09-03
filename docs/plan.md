@@ -53,6 +53,14 @@ BOM attached" notice flashing up before the board loaded (loading and absent
 were the same null), and fullscreen hiding the status line (it fullscreened the
 iframe, not the panel).
 
+**First sync of a new design (added 2026-09-03).** The assembly chooser leads
+with "create a new assembly in InvenTree", because otherwise the first sync of
+a board InvenTree has never heard of dead-ends: there is nothing to pick. The
+form takes name, IPN, description and category, defaulting the name to the
+board filename and the category to whichever one this instance already keeps
+its assemblies in — read from the data, since another user's InvenTree may have
+no category called "Assemblies" at all.
+
 **Careful with variants.** The design includes Pro-only sensors (U6, U7). A
 sync run against the HF assembly wants to *add* them, which would pollute a
 variant that deliberately omits them. The action warns, but it is a real

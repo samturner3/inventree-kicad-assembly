@@ -14,7 +14,7 @@ import pcbnew
 
 from .core.client import InvenTreeClient, InvenTreeError
 from .core.settings import load_settings, settings_help
-from .core import bom_sync, lcsc, matching, workflows
+from .core import assemblies, bom_sync, lcsc, matching, workflows
 from .core.workflows import build_choices, generate_and_upload
 from .progress_dialog import CANCELLED, run_with_progress
 from .version import version
@@ -142,6 +142,73 @@ class SyncBomAction(_BaseAction):
         )
         self.show_toolbar_button = False
 
+    #: Offered first in the list, for a design InvenTree has not met yet.
+    NEW_ASSEMBLY = "+  Create a new assembly in InvenTree…"
+
+    def choose_assembly(self, client, pcb_path):
+        """The InvenTree assembly this design builds, creating one if needed.
+
+        Returns None if the user backed out.
+        """
+        wx = _wx()
+        existing = assemblies.list_assemblies(client)
+
+        if existing:
+            labels = [assemblies.label_for(p) for p in existing]
+            chooser = wx.SingleChoiceDialog(
+                None,
+                "Assemblies in InvenTree — pick the one this design builds.\n\n"
+                "This design's parts are written into that assembly's BOM. Take "
+                "care with variants: parts another variant deliberately leaves "
+                "out will be added to whichever assembly is chosen.",
+                "InvenTree: Sync BOM — choose an assembly",
+                [self.NEW_ASSEMBLY] + labels,
+            )
+            try:
+                if chooser.ShowModal() != wx.ID_OK:
+                    return None
+                selection = chooser.GetSelection()
+            finally:
+                chooser.Destroy()
+            if selection > 0:
+                return existing[selection - 1]
+        else:
+            _message(
+                "InvenTree has no assembly parts yet, so there is nothing to "
+                "sync this design into. Create one now.",
+                "InvenTree: Sync BOM",
+            )
+
+        return self.create_assembly(client, pcb_path, existing)
+
+    def create_assembly(self, client, pcb_path, existing):
+        wx = _wx()
+        from .assembly_dialog import NewAssemblyDialog
+
+        categories = assemblies.list_categories(client)
+        dialog = NewAssemblyDialog(
+            None,
+            categories,
+            default_name=assemblies.suggested_name(pcb_path),
+            default_category=assemblies.default_category(existing, categories),
+        )
+        try:
+            if dialog.ShowModal() != wx.ID_OK:
+                return None
+            values = dialog.values()
+        finally:
+            dialog.Destroy()
+
+        if not values["name"]:
+            raise InvenTreeError("An assembly needs a name.")
+        created = assemblies.create_assembly(client, **values)
+        _message(
+            f"Created {assemblies.label_for(created)}.\n\n"
+            "Its BOM is filled in by the sync that follows.",
+            "InvenTree: new assembly",
+        )
+        return created
+
     def run(self):
         wx = _wx()
         board = pcbnew.GetBoard()
@@ -154,28 +221,10 @@ class SyncBomAction(_BaseAction):
         # Which assembly is this design? Offered rather than guessed: picking
         # the wrong variant would write this board's parts into another
         # product's BOM.
-        assemblies = [
-            p for p in client.rows("/api/part/", {"assembly": "true", "active": "true"})
-        ]
-        if not assemblies:
-            raise InvenTreeError("No assembly parts found in InvenTree.")
-        labels = [f"{p.get('IPN') or ''} {p.get('name','')}".strip() for p in assemblies]
-
-        chooser = wx.SingleChoiceDialog(
-            None,
-            "Update which assembly's BOM from this design?\n\n"
-            "Take care with variants: a design that includes parts another "
-            "variant leaves out will add them to whichever assembly is chosen.",
-            "InvenTree: Sync BOM",
-            labels,
-        )
-        try:
-            if chooser.ShowModal() != wx.ID_OK:
-                return
-            assembly = assemblies[chooser.GetSelection()]
-            assembly_label = labels[chooser.GetSelection()]
-        finally:
-            chooser.Destroy()
+        assembly = self.choose_assembly(client, pcb_path)
+        if assembly is None:
+            return
+        assembly_label = assemblies.label_for(assembly)
 
         # Exporting the BOM shells out to kicad-cli and the matching tables
         # come over the network, so this is seconds of work at best. Run it on
