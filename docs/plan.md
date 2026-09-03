@@ -93,6 +93,29 @@ against fake stock. Also: `ENABLE_PLUGINS_INTERFACE` was turned on globally,
 and BO-0003 has one real consume against it from S1 (line 69-ish) plus the
 panel test on BO-0004.
 
+**Sync correctness (2026-09-03).** Four things, all found by reading the real
+BOMs rather than the code:
+
+- **Matching consults the target assembly's existing BOM by designator**, last
+  of the automatic strategies. A line saying `RES-0603-100R` covers
+  `R10,R11,R12,R13` is a decision someone already made by hand. Rescues 7
+  symbols on the default variant, 10 on Pro, and liquidates itself via the IPN
+  write-back.
+- **Inherited BOM lines are read-only, and that was a live bug.** A variant's
+  BOM listing *does* include lines inherited from its template (contrary to a
+  first reading of the filterset), and they carry the template's pk in `part` —
+  so the planner treated one as a normal line and would have PATCHed it,
+  changing every sibling variant at once. They are now split out and reported
+  as INHERITED, never written.
+- **Orphans state their cause** — "not fitted in this variant" versus "no symbol
+  in this design" — because DNP symbols are matched too. This board's orphans
+  drop from three to one: the bare PCB.
+- **iBOM's variant DNP support is additive only.** It marks a footprint DNP if
+  the base says so, then again if the variant does, and never clears the base
+  flag — while KiCad's model has variants *un*-DNP what they add, which is what
+  Pro does here. So `config.kicad_variant` alone renders the base fitted set;
+  the board copy must be stamped as well. Both are done.
+
 ## Context
 
 Sam's physical assembly workflow uses InteractiveHtmlBom (iBOM) to click
