@@ -79,15 +79,11 @@ def generate_and_upload(client, board, pcb_path, build_pk, variant="",
             "Run 'InvenTree: Sync BOM' first."
         )
 
-    # A part this variant does not fit has no allocation, so it would show a
-    # blank IPN -- indistinguishable from one whose matching failed. Say which
-    # it is, in the column the assembler is already reading. Done after the
-    # check above, so a build with no BOM at all still gets the useful error.
+    # Recorded for the panel's status line and so that ticking an unfitted
+    # designator reads as "not fitted" rather than a failed lookup. No longer
+    # written into the IPN column: generate.DNP_FIELD keeps these components
+    # out of the table altogether, so there is no row to label.
     unfitted = variants.not_fitted(board, variant)
-    for ref in unfitted:
-        entry = fields.setdefault(ref, {})
-        if not entry.get(generate.IPN_FIELD):
-            entry[generate.IPN_FIELD] = "DNP"
 
     # The XML is a throwaway hand-off to iBOM, regenerated every run, so it
     # belongs in a temp dir rather than beside the design where it would show

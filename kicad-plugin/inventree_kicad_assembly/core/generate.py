@@ -16,7 +16,19 @@ import sys
 # The columns this integration adds, and the checkbox that means "on the board".
 IPN_FIELD = "IPN"
 LOCATION_FIELD = "Location"
-REQUIRED_CHECKBOXES = ["Sourced", "Placed", "DNP"]
+
+# iBOM's checkbox columns are all manual ticks -- nothing populates them. A
+# "DNP" one therefore looked automatic and was not, listing every unfitted part
+# with an empty box beside it. Not-fitted parts are dropped from the table
+# instead (see DNP_FIELD below), so the column has nothing left to say.
+REQUIRED_CHECKBOXES = ["Sourced", "Placed"]
+
+# iBOM's parser writes "DNP" into this field for anything the board -- or the
+# selected variant -- does not populate, and skips any component whose dnp_field
+# is non-empty. Pointing dnp_field at it keeps unfitted parts out of the
+# placement list, while iBOM's own DNP outline (on by default) still shows them
+# on the render, so an empty pad reads as deliberate rather than missed.
+DNP_FIELD = "kicad_dnp"
 
 
 class GenerationError(RuntimeError):
@@ -89,6 +101,7 @@ def generate_ibom(board, pcb_path, extra_data_file, dest_dir, name="ibom",
     config.show_fields = ["Value", "Footprint", IPN_FIELD, LOCATION_FIELD]
     config.group_fields = ["Value", "Footprint", IPN_FIELD]
     config.checkboxes = ",".join(REQUIRED_CHECKBOXES)
+    config.dnp_field = DNP_FIELD
     if variant:
         config.kicad_variant = variant
     config.open_browser = False

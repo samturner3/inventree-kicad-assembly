@@ -229,10 +229,34 @@ export async function fetchAttachmentUrl(
 export function injectState(html: string, state: PanelState): string {
   const payload = JSON.stringify({ checkboxes: state.checkboxes });
   const tag =
-    `<script>var IBOM_BRIDGE_STATE=${payload};</script>` + FIELD_UPDATER;
+    `<script>var IBOM_BRIDGE_STATE=${payload};</script>` + STICKY_HEADER +
+    FIELD_UPDATER;
   const at = html.indexOf("<script");
   return at === -1 ? tag + html : html.slice(0, at) + tag + html.slice(at);
 }
+
+/**
+ * Pins the BOM table's header row while the list scrolls.
+ *
+ * iBOM scrolls #bomdiv (`.split { overflow-y: auto }`), so sticking the cells
+ * to its top works without touching iBOM's own layout. Two details: `th`
+ * inherits `position: relative` from a shared rule and has to be overridden,
+ * and a sticky cell's border does not travel with it in Chrome -- hence the
+ * inset shadow standing in for the bottom border.
+ *
+ * Injected rather than shipped in iBOM's user.css for the same reason as the
+ * field updater: user.css is baked in when KiCad generates the file, so a board
+ * generated earlier would never get it.
+ */
+const STICKY_HEADER = `<style>
+  .bom th {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    box-shadow: inset 0 -1px 0 black;
+  }
+  .dark .bom th { box-shadow: inset 0 -1px 0 #777; }
+</style>`;
 
 /**
  * Applies refreshed IPN/Location inside the frame, on request from the panel.
