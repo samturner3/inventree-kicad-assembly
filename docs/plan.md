@@ -61,10 +61,28 @@ board filename and the category to whichever one this instance already keeps
 its assemblies in — read from the data, since another user's InvenTree may have
 no category called "Assemblies" at all.
 
-**Careful with variants.** The design includes Pro-only sensors (U6, U7). A
-sync run against the HF assembly wants to *add* them, which would pollute a
-variant that deliberately omits them. The action warns, but it is a real
-footgun.
+**Variants and DNP (settled 2026-09-03).** KiCad 10 has first-class design
+variants, and this design declares one ("Pro", which un-DNPs R1-R6/R18/R19).
+Both actions now ask which variant, because a variant *is* a bill of materials:
+default syncs 71 symbols, Pro syncs 79.
+
+- **The variant maps to the InvenTree assembly part**, one each. That is what
+  makes the old footgun go away: the parts a variant leaves out are simply not
+  in that assembly's BOM.
+- **DNP parts are not sent to InvenTree at all.** InvenTree has no
+  do-not-populate concept — `optional` and `consumable` mean other things — and
+  a BOM line there is something to buy, allocate and consume, which an unfitted
+  part is none of. They are reported in a "Not fitted" tab instead of vanishing:
+  the export no longer uses `--exclude-dnp`, it asks for the DNP and
+  EXCLUDE_FROM_BOM columns and filters in Python, so it can say what it left out.
+- **Two KiCad API traps, both found by testing.** `kicad-cli sch export bom
+  --variant` accepts a name that does not exist, exits 0, and returns the
+  default BOM — so a typo would write the base product's parts into a variant.
+  Names are validated against the `.kicad_pro` first. And `FOOTPRINT.IsDNP()`
+  reports the default variant even after `BOARD.SetCurrentVariant()`; the real
+  answer is `GetDNPForVariant()`. Since iBOM reads `IsDNP()`, generation stamps
+  the variant onto a *freshly loaded copy* of the board — never the document
+  KiCad has open, which would dirty the user's design.
 
 **Test fixtures still in InvenTree, delete when done:** parts 650
 `ZZ-TEST-COMPONENT` / 651 `ZZ-TEST-ASSEMBLY`, BOM item 172, StockItems 665 plus

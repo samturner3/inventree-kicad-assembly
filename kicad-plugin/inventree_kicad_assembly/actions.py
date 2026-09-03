@@ -14,7 +14,7 @@ import pcbnew
 
 from .core.client import InvenTreeClient, InvenTreeError
 from .core.settings import load_settings, settings_help
-from .core import assemblies, bom_sync, lcsc, matching, workflows
+from .core import assemblies, bom_sync, lcsc, matching, variants, workflows
 from .core.workflows import build_choices, generate_and_upload
 from .progress_dialog import CANCELLED, run_with_progress
 from .version import version
@@ -49,6 +49,35 @@ class _BaseAction(pcbnew.ActionPlugin, object):
     def run(self):
         raise NotImplementedError
 
+    def choose_variant(self, board, purpose):
+        """Which design variant? Skipped silently when the design has only one.
+
+        A variant decides which parts are fitted, so it decides the bill of
+        materials -- picking the wrong one writes the base product's parts into
+        a variant, or orders parts for a board that will not carry them.
+        """
+        wx = _wx()
+        available = variants.from_board(board)
+        if len(available) < 2:
+            return variants.DEFAULT
+
+        labels = [variants.label_for(n, d) for n, d in available]
+        dialog = wx.SingleChoiceDialog(
+            None,
+            f"This design declares {len(available) - 1} variant(s). "
+            f"Which one {purpose}?\n\n"
+            "A variant changes which parts are fitted, so each one is its own "
+            "bill of materials — and its own assembly part in InvenTree.",
+            "InvenTree: choose a design variant",
+            labels,
+        )
+        try:
+            if dialog.ShowModal() != wx.ID_OK:
+                return None
+            return available[dialog.GetSelection()][0]
+        finally:
+            dialog.Destroy()
+
     def client(self):
         host, token = load_settings()
         if not host or not token:
@@ -75,6 +104,10 @@ class GenerateBuildIbomAction(_BaseAction):
         pcb_path = board.GetFileName()
         if not pcb_path:
             raise InvenTreeError("Save the board before generating a BOM.")
+
+        variant = self.choose_variant(board, "are you assembling")
+        if variant is None:
+            return
 
         client = self.client()
         choices = build_choices(client)
@@ -110,7 +143,8 @@ class GenerateBuildIbomAction(_BaseAction):
 
         try:
             attachment, summary = generate_and_upload(
-                client, board, pcb_path, chosen["pk"], progress=tick
+                client, board, pcb_path, chosen["pk"], variant=variant,
+                progress=tick
             )
         finally:
             progress.Destroy()
@@ -145,7 +179,7 @@ class SyncBomAction(_BaseAction):
     #: Offered first in the list, for a design InvenTree has not met yet.
     NEW_ASSEMBLY = "+  Create a new assembly in InvenTree…"
 
-    def choose_assembly(self, client, pcb_path):
+    def choose_assembly(self, client, pcb_path, variant=""):
         """The InvenTree assembly this design builds, creating one if needed.
 
         Returns None if the user backed out.
@@ -157,10 +191,12 @@ class SyncBomAction(_BaseAction):
             labels = [assemblies.label_for(p) for p in existing]
             chooser = wx.SingleChoiceDialog(
                 None,
-                "Assemblies in InvenTree — pick the one this design builds.\n\n"
-                "This design's parts are written into that assembly's BOM. Take "
-                "care with variants: parts another variant deliberately leaves "
-                "out will be added to whichever assembly is chosen.",
+                "Assemblies in InvenTree — pick the one this design builds"
+                + (f" as the {variant} variant.\n\n" if variant else ".\n\n") +
+                "This design's parts are written into that assembly's BOM, so "
+                "the pairing matters: a variant's parts written into the base "
+                "product's assembly would have it ordering parts it never "
+                "fits.",
                 "InvenTree: Sync BOM — choose an assembly",
                 [self.NEW_ASSEMBLY] + labels,
             )
@@ -179,9 +215,9 @@ class SyncBomAction(_BaseAction):
                 "InvenTree: Sync BOM",
             )
 
-        return self.create_assembly(client, pcb_path, existing)
+        return self.create_assembly(client, pcb_path, existing, variant)
 
-    def create_assembly(self, client, pcb_path, existing):
+    def create_assembly(self, client, pcb_path, existing, variant=""):
         wx = _wx()
         from .assembly_dialog import NewAssemblyDialog
 
@@ -189,7 +225,7 @@ class SyncBomAction(_BaseAction):
         dialog = NewAssemblyDialog(
             None,
             categories,
-            default_name=assemblies.suggested_name(pcb_path),
+            default_name=assemblies.suggested_name(pcb_path, variant),
             default_category=assemblies.default_category(existing, categories),
         )
         try:
@@ -221,34 +257,41 @@ class SyncBomAction(_BaseAction):
         # Which assembly is this design? Offered rather than guessed: picking
         # the wrong variant would write this board's parts into another
         # product's BOM.
-        assembly = self.choose_assembly(client, pcb_path)
+        variant = self.choose_variant(board, "does this assembly build")
+        if variant is None:
+            return
+
+        assembly = self.choose_assembly(client, pcb_path, variant)
         if assembly is None:
             return
         assembly_label = assemblies.label_for(assembly)
+        if variant:
+            assembly_label += f"   ({variant} variant)"
 
         # Exporting the BOM shells out to kicad-cli and the matching tables
         # come over the network, so this is seconds of work at best. Run it on
         # a thread: on the main thread the event loop cannot paint and KiCad
         # just beachballs, which looks like a hang.
         def work(report):
-            matches, sch_path = workflows.prepare_sync(
-                client, pcb_path, progress=report
+            matches, sch_path, excluded = workflows.prepare_sync(
+                client, pcb_path, variant=variant, progress=report
             )
             report("Working out what changes…")
             changes = bom_sync.plan(client, assembly["pk"], matches)
             report("Checking for the LCSC import plugin…")
             creator = lcsc.LcscCreator(client)
             creator.available  # probe here rather than from the dialog
-            return matches, sch_path, changes, creator
+            return matches, sch_path, changes, creator, excluded
 
         prepared = run_with_progress("InvenTree: Sync BOM", work)
         if prepared is CANCELLED:
             return
-        matches, sch_path, changes, creator = prepared
+        matches, sch_path, changes, creator, excluded = prepared
 
         from .review_dialog import ReviewDialog
 
-        dialog = ReviewDialog(None, matches, changes, creator, assembly_label)
+        dialog = ReviewDialog(None, matches, changes, creator, assembly_label,
+                              excluded=excluded)
         try:
             if dialog.ShowModal() != wx.ID_OK:
                 return

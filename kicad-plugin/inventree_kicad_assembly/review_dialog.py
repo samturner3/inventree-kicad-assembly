@@ -109,7 +109,8 @@ def _part_lines(part):
 
 
 class ReviewDialog(wx.Dialog):
-    def __init__(self, parent, matches, changes, creator, assembly_label):
+    def __init__(self, parent, matches, changes, creator, assembly_label,
+                 excluded=None):
         super().__init__(
             parent, title="InvenTree: Sync BOM", size=(980, 640),
             style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER,
@@ -117,6 +118,7 @@ class ReviewDialog(wx.Dialog):
         self.matches = matches
         self.changes = changes
         self.creator = creator
+        self.excluded = excluded or []
         # Rows the user asked to create from their LCSC code.
         self.to_create = set()
 
@@ -126,6 +128,11 @@ class ReviewDialog(wx.Dialog):
         notebook = wx.Notebook(self)
         notebook.AddPage(self._symbols_page(notebook), "Symbols")
         notebook.AddPage(self._changes_page(notebook), "BOM changes")
+        if self.excluded:
+            notebook.AddPage(
+                self._excluded_page(notebook),
+                f"Not fitted ({len(self.excluded)})",
+            )
         outer.Add(notebook, 1, wx.EXPAND | wx.LEFT | wx.RIGHT, 10)
 
         self.write_back = wx.CheckBox(
@@ -156,10 +163,13 @@ class ReviewDialog(wx.Dialog):
         parts = [f"{matched} of {len(self.matches)} symbols matched"]
         for key, count in sorted(counts.items(), key=lambda kv: -kv[1]):
             parts.append(f"{count} {matching.STRATEGY_LABELS[key]}")
-        text = wx.StaticText(
-            self, label=f"Assembly: {assembly_label}\n" + " · ".join(parts)
-        )
-        return text
+        lines = [f"Assembly: {assembly_label}", " · ".join(parts)]
+        if self.excluded:
+            lines.append(
+                f"{len(self.excluded)} symbols not written to InvenTree "
+                "(DNP or excluded from BOM) — see the Not fitted tab"
+            )
+        return wx.StaticText(self, label="\n".join(lines))
 
     def _symbols_page(self, parent):
         panel = wx.Panel(parent)
@@ -264,6 +274,44 @@ class ReviewDialog(wx.Dialog):
             "deliberate (the bare PCB, hand-added hardware); others just mean a "
             "symbol above did not match. They are kept unless you tick the box."
         ))
+        sizer = wx.BoxSizer(wx.VERTICAL)
+        sizer.Add(listing, 1, wx.EXPAND | wx.ALL, 5)
+        sizer.Add(note, 0, wx.ALL, 5)
+        panel.SetSizer(sizer)
+        return panel
+
+    def _excluded_page(self, parent):
+        """What KiCad leaves out, shown so that it is a decision, not a silence.
+
+        These never reach InvenTree. A BOM line there is something to buy,
+        allocate and consume, and a part the board does not populate is none of
+        those -- InvenTree has no "do not fit" flag to mark it with either.
+        The variant that *does* fit them has its own assembly part, and syncing
+        that variant is what puts them in a BOM.
+        """
+        panel = wx.Panel(parent)
+        listing = wx.ListCtrl(panel, style=wx.LC_REPORT)
+        for i, (title, width) in enumerate([
+            ("Ref", 80), ("Value", 160), ("Footprint", 300), ("Why", 220),
+        ]):
+            listing.InsertColumn(i, title, width=width)
+
+        for row in self.excluded:
+            idx = listing.InsertItem(listing.GetItemCount(), row.get("ref", ""))
+            listing.SetItem(idx, 1, row.get("value", ""))
+            listing.SetItem(idx, 2, row.get("footprint", ""))
+            listing.SetItem(idx, 3, row.get("excluded", ""))
+            listing.SetItemTextColour(idx, wx.Colour(130, 130, 130))
+
+        note = wx.StaticText(panel, label=(
+            "Not written to InvenTree, and not an error. InvenTree has no "
+            "do-not-populate concept — a BOM line there is a part to buy, "
+            "allocate and consume — so an unfitted part is left out rather "
+            "than added and flagged. If one of these should be fitted, it "
+            "belongs to another variant: sync that variant into its own "
+            "assembly instead."
+        ))
+        note.Wrap(900)
         sizer = wx.BoxSizer(wx.VERTICAL)
         sizer.Add(listing, 1, wx.EXPAND | wx.ALL, 5)
         sizer.Add(note, 0, wx.ALL, 5)

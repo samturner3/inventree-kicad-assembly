@@ -4,7 +4,8 @@ tested from a terminal."""
 import os
 import tempfile
 
-from . import bom_sync, generate, ibom_xml, matching, schematic, schematic_bom
+from . import (bom_sync, generate, ibom_xml, matching, schematic, schematic_bom,
+               variants)
 
 ATTACHMENT_SUFFIX = ".ibom.html"
 
@@ -43,7 +44,8 @@ def build_choices(client, limit_to_part=None):
     return out
 
 
-def generate_and_upload(client, board, pcb_path, build_pk, progress=None):
+def generate_and_upload(client, board, pcb_path, build_pk, variant="",
+                       progress=None):
     """Generate this build's iBOM and attach it to the build order.
 
     Returns (attachment, summary_lines).
@@ -55,13 +57,30 @@ def generate_and_upload(client, board, pcb_path, build_pk, progress=None):
     build = client.get_build(build_pk)
     reference = build.get("reference") or f"build-{build_pk}"
 
+    if variant:
+        # iBOM reads IsDNP(), which ignores the variant, so the fitted set has
+        # to be stamped onto a copy of the board before it is rendered.
+        say(f"Applying the {variant} variant…")
+        board = variants.apply_to_board(pcb_path, variant)
+
     say("Reading allocations from InvenTree…")
     fields, notes = ibom_xml.fields_for_build(client, build_pk)
+
     if not fields:
         raise generate.GenerationError(
             f"{reference} has no BOM lines with reference designators. "
             "Run 'InvenTree: Sync BOM' first."
         )
+
+    # A part this variant does not fit has no allocation, so it would show a
+    # blank IPN -- indistinguishable from one whose matching failed. Say which
+    # it is, in the column the assembler is already reading. Done after the
+    # check above, so a build with no BOM at all still gets the useful error.
+    unfitted = variants.not_fitted(board, variant)
+    for ref in unfitted:
+        entry = fields.setdefault(ref, {})
+        if not entry.get(generate.IPN_FIELD):
+            entry[generate.IPN_FIELD] = "DNP"
 
     # The XML is a throwaway hand-off to iBOM, regenerated every run, so it
     # belongs in a temp dir rather than beside the design where it would show
@@ -87,7 +106,9 @@ def generate_and_upload(client, board, pcb_path, build_pk, progress=None):
     )
 
     summary = [
-        f"{reference}: {len(fields)} designators",
+        f"{reference}: {len(fields)} designators"
+        + (f", {variant} variant" if variant else "")
+        + (f", {len(unfitted)} not fitted" if unfitted else ""),
         ibom_xml.format_notes(notes, fields),
     ]
     return attachment, summary
@@ -96,26 +117,43 @@ def generate_and_upload(client, board, pcb_path, build_pk, progress=None):
 IPN_SYMBOL_FIELD = "InvenTree_IPN"
 
 
-def prepare_sync(client, pcb_path, progress=None):
+def prepare_sync(client, pcb_path, variant="", progress=None):
     """Read the schematic and resolve every symbol. Nothing is written.
 
-    Returns (matches, sch_path). The caller reviews these -- in the dialog, or
-    by printing them -- before anything is applied, so a sync is always seen
-    before it happens.
+    Returns (matches, sch_path, excluded). The caller reviews these -- in the
+    dialog, or by printing them -- before anything is applied, so a sync is
+    always seen before it happens.
+
+    `excluded` holds the symbols this variant does not fit, which never reach
+    InvenTree, and are returned only so the review can say so out loud.
     """
     def say(msg):
         if progress:
             progress(msg)
 
     sch_path = schematic_bom.schematic_for_board(pcb_path)
-    say("Reading the schematic…")
-    rows = schematic_bom.read_bom(sch_path)
+    if variant and not variants.is_declared(pcb_path, variant):
+        # kicad-cli would accept this silently and hand back the default
+        # variant, quietly writing the base product's BOM into a variant.
+        raise schematic_bom.SchematicError(
+            f"This design declares no variant called {variant!r}."
+        )
+
+    say("Reading the schematic…" if not variant
+        else f"Reading the schematic ({variant})…")
+    rows = schematic_bom.read_bom(sch_path, variant=variant)
     if not rows:
         raise schematic_bom.SchematicError("The schematic has no components.")
 
+    rows, excluded = schematic_bom.split_excluded(rows)
+    if not rows:
+        raise schematic_bom.SchematicError(
+            "Every symbol in this design is DNP or excluded from the BOM."
+        )
+
     say(f"Matching {len(rows)} symbols against InvenTree…")
     matches = matching.Matcher(client).match_rows(rows, progress=progress)
-    return matches, sch_path
+    return matches, sch_path, excluded
 
 
 def apply_sync(client, assembly_pk, matches, sch_path, sheets=None,

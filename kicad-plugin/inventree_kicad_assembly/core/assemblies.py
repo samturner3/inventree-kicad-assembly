@@ -61,9 +61,14 @@ def default_category(assemblies, categories):
     return categories[0] if categories else None
 
 
-def suggested_name(pcb_path):
-    """The board's filename -- the closest thing a design has to a product name."""
-    return os.path.splitext(os.path.basename(pcb_path or ""))[0]
+def suggested_name(pcb_path, variant=""):
+    """The board's filename -- the closest thing a design has to a product name.
+
+    A variant gets its own suffixed name, since it needs its own assembly part:
+    the two variants are different products with different BOMs.
+    """
+    stem = os.path.splitext(os.path.basename(pcb_path or ""))[0]
+    return f"{stem}-{variant}" if variant else stem
 
 
 def create_assembly(client, name, description="", ipn="", category=None):
