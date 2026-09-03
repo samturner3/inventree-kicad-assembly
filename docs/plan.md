@@ -5,10 +5,12 @@ shipped and its design record now lives permanently in the repo at
 `scripts/inventree/ibom_inventree_integration_plan.md`. This is a new,
 larger feature building on top of it.)*
 
-## Where this is up to (2026-09-02)
+## Where this is up to (2026-09-03)
 
-Everything through P4's core is built, pushed, and verified as far as it can be
-without a human clicking things in KiCad.
+Everything through P4's core is built and pushed. "Generate Build iBOM" has now
+been run from the KiCad GUI against BO-0004 and the board came up in the
+Assembly panel, so the whole KiCad → InvenTree → assemble path works end to
+end. The Sync BOM dialog is the last unexercised piece.
 
 | | State |
 |---|---|
@@ -18,21 +20,26 @@ without a human clicking things in KiCad.
 | S3 KiCad environment | passed |
 | P1 build-scoped generation | passed |
 | P2 panel end-to-end | passed, incl. cross-machine restore |
-| P3 KiCad "Generate Build iBOM" | built, verified headlessly — **GUI click untested** |
+| P3 KiCad "Generate Build iBOM" | passed from the KiCad GUI, board renders in the panel |
 | P4 "Sync BOM" | core built and dry-run — **dialog untested**, LCSC endpoint not written |
 
 **Next, in order:**
 
-1. **Try the two KiCad actions** (Tools → External Plugins). The plugin is
-   symlinked into `~/Documents/KiCad/10.0/3rdparty/plugins/` and credentials
-   are in `~/.config/inventree-kicad-assembly.env`. Neither wx dialog has ever
-   been shown on screen.
-2. **Check fullscreen on desktop** in the Assembly panel.
-3. **Add `find-or-create` to `inventree-lcsc-import`** — a change in the
+1. **Try "Sync BOM"** (Tools → External Plugins). The plugin is symlinked into
+   `~/Documents/KiCad/10.0/3rdparty/plugins/` and credentials are in
+   `~/.config/inventree-kicad-assembly.env`. Its review dialog is the one wx
+   window never shown on screen; run it against a copied schematic first, since
+   confirming it writes IPNs back into the files.
+2. **Add `find-or-create` to `inventree-lcsc-import`** — a change in the
    *scripts* repo, not this one. `core/lcsc.py` documents the contract it
    probes for. Until then the create-from-LCSC button is greyed out with the
    reason, which is the intended graceful behaviour.
-4. **P5**: docs, install guide, publishing.
+3. **P5**: docs, install guide, publishing.
+
+Panel 0.1.3 fixed the two things that first real run showed: the "no
+interactive BOM attached" notice flashing up before the board loaded (loading
+and absent were the same null), and fullscreen hiding the status line (it
+fullscreened the iframe, not the panel).
 
 **Careful with variants.** The design includes Pro-only sensors (U6, U7). A
 sync run against the HF assembly wants to *add* them, which would pollute a
