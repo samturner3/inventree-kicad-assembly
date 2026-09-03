@@ -108,6 +108,18 @@ def _part_lines(part):
     return lines
 
 
+#: Rows KiCad keeps out of the BOM. Grey, and never actionable.
+_EXCLUDED_COLOUR = wx.Colour(150, 150, 150)
+_EXCLUSION_NOTE = "{why} — not sent to InvenTree"
+
+
+def _reference_key(reference):
+    """Sort R2 before R18, the way a person reads a designator."""
+    prefix = "".join(c for c in reference if not c.isdigit())
+    digits = "".join(c for c in reference if c.isdigit())
+    return (prefix, int(digits) if digits else 0, reference)
+
+
 class ReviewDialog(wx.Dialog):
     def __init__(self, parent, matches, changes, creator, assembly_label,
                  excluded=None):
@@ -128,11 +140,6 @@ class ReviewDialog(wx.Dialog):
         notebook = wx.Notebook(self)
         notebook.AddPage(self._symbols_page(notebook), "Symbols")
         notebook.AddPage(self._changes_page(notebook), "BOM changes")
-        if self.excluded:
-            notebook.AddPage(
-                self._excluded_page(notebook),
-                f"Not fitted ({len(self.excluded)})",
-            )
         outer.Add(notebook, 1, wx.EXPAND | wx.LEFT | wx.RIGHT, 10)
 
         self.write_back = wx.CheckBox(
@@ -166,10 +173,24 @@ class ReviewDialog(wx.Dialog):
         lines = [f"Assembly: {assembly_label}", " · ".join(parts)]
         if self.excluded:
             lines.append(
-                f"{len(self.excluded)} symbols not written to InvenTree "
-                "(DNP or excluded from BOM) — see the Not fitted tab"
+                f"{len(self.excluded)} not fitted in this variant — listed "
+                "greyed out below, and not written to InvenTree"
             )
         return wx.StaticText(self, label="\n".join(lines))
+
+    def _display_rows(self):
+        """Every symbol in the design, in reference order.
+
+        Excluded symbols are listed alongside the rest rather than hidden in a
+        tab of their own: this list claims to show the whole design, and a
+        reader looking for R18 is better served by a greyed row saying why it
+        is not going than by its absence. They carry no Match -- selecting one
+        disables the candidate controls, which is the point.
+        """
+        rows = [(m.row.get("ref", ""), m, None) for m in self.matches]
+        rows += [(r.get("ref", ""), None, r) for r in self.excluded]
+        rows.sort(key=lambda item: _reference_key(item[0]))
+        return rows
 
     def _symbols_page(self, parent):
         panel = wx.Panel(parent)
@@ -180,7 +201,19 @@ class ReviewDialog(wx.Dialog):
         ]):
             listing.InsertColumn(i, title, width=width)
 
-        for m in self.matches:
+        self.display = self._display_rows()
+        for _ref, m, excluded in self.display:
+            if excluded is not None:
+                idx = listing.InsertItem(listing.GetItemCount(), excluded.get("ref", ""))
+                listing.SetItem(idx, 1, excluded.get("value", ""))
+                listing.SetItem(idx, 2, "not sent")
+                listing.SetItem(idx, 3, "—")
+                listing.SetItem(idx, 4, excluded.get("sku", ""))
+                listing.SetItem(idx, 5, _EXCLUSION_NOTE.format(
+                    why=excluded.get("excluded", "excluded")))
+                listing.SetItemTextColour(idx, _EXCLUDED_COLOUR)
+                continue
+
             idx = listing.InsertItem(listing.GetItemCount(), m.ref)
             listing.SetItem(idx, 1, m.row.get("value", ""))
             listing.SetItem(idx, 2, matching.STRATEGY_LABELS[m.strategy])
@@ -280,66 +313,59 @@ class ReviewDialog(wx.Dialog):
         panel.SetSizer(sizer)
         return panel
 
-    def _excluded_page(self, parent):
-        """What KiCad leaves out, shown so that it is a decision, not a silence.
-
-        These never reach InvenTree. A BOM line there is something to buy,
-        allocate and consume, and a part the board does not populate is none of
-        those -- InvenTree has no "do not fit" flag to mark it with either.
-        The variant that *does* fit them has its own assembly part, and syncing
-        that variant is what puts them in a BOM.
-        """
-        panel = wx.Panel(parent)
-        listing = wx.ListCtrl(panel, style=wx.LC_REPORT)
-        for i, (title, width) in enumerate([
-            ("Ref", 80), ("Value", 160), ("Footprint", 300), ("Why", 220),
-        ]):
-            listing.InsertColumn(i, title, width=width)
-
-        for row in self.excluded:
-            idx = listing.InsertItem(listing.GetItemCount(), row.get("ref", ""))
-            listing.SetItem(idx, 1, row.get("value", ""))
-            listing.SetItem(idx, 2, row.get("footprint", ""))
-            listing.SetItem(idx, 3, row.get("excluded", ""))
-            listing.SetItemTextColour(idx, wx.Colour(130, 130, 130))
-
-        note = wx.StaticText(panel, label=(
-            "Not written to InvenTree, and not an error. InvenTree has no "
-            "do-not-populate concept — a BOM line there is a part to buy, "
-            "allocate and consume — so an unfitted part is left out rather "
-            "than added and flagged. If one of these should be fitted, it "
-            "belongs to another variant: sync that variant into its own "
-            "assembly instead."
-        ))
-        note.Wrap(900)
-        sizer = wx.BoxSizer(wx.VERTICAL)
-        sizer.Add(listing, 1, wx.EXPAND | wx.ALL, 5)
-        sizer.Add(note, 0, wx.ALL, 5)
-        panel.SetSizer(sizer)
-        return panel
-
     # --- interaction ----------------------------------------------------
 
     def _selected_match(self):
+        """(index, Match) for the selected row -- Match is None when excluded."""
         idx = self.listing.GetFirstSelected()
-        return (idx, self.matches[idx]) if idx >= 0 else (None, None)
+        if idx < 0 or idx >= len(self.display):
+            return (None, None)
+        return (idx, self.display[idx][1])
 
-    def _show_details(self, match, part):
-        self.symbol_details.SetValue(
-            "\n".join(_symbol_lines(match.row)) if match
-            else "Select a symbol above to see its KiCad fields."
-        )
-        self.part_details.SetValue(
-            ("\n".join(_part_lines(part)) or f"Part {part.get('pk', '?')}") if part
-            else "No part yet — choose a candidate below, or create from LCSC."
-        )
+    def _selected_excluded(self):
+        idx = self.listing.GetFirstSelected()
+        if idx < 0 or idx >= len(self.display):
+            return None
+        return self.display[idx][2]
+
+    def _show_details(self, match, part, excluded=None):
+        if match is not None:
+            symbol_text = "\n".join(_symbol_lines(match.row))
+        elif excluded is not None:
+            symbol_text = "\n".join(_symbol_lines(excluded))
+        else:
+            symbol_text = "Select a symbol above to see its KiCad fields."
+        self.symbol_details.SetValue(symbol_text)
+        if part:
+            self.part_details.SetValue(
+                "\n".join(_part_lines(part)) or f"Part {part.get('pk', '?')}"
+            )
+        elif excluded is not None:
+            self.part_details.SetValue(
+                f"Not sent to InvenTree: {excluded.get('excluded', 'excluded')}.\n\n"
+                "This symbol is not written to InvenTree. A BOM line there is "
+                "something to buy, allocate and consume, and InvenTree has no "
+                "do-not-populate flag to mark an unfitted part with.\n\n"
+                "If it should be fitted, it belongs to another variant — sync "
+                "that variant into its own assembly."
+            )
+        else:
+            self.part_details.SetValue(
+                "No part yet — choose a candidate below, or create from LCSC."
+            )
 
     def _on_select(self, _event):
         _idx, match = self._selected_match()
         self.picker.Clear()
-        if match is None or match.matched:
+        if match is None:
+            # An excluded row, or nothing selected. Either way there is no
+            # part to assign, so the controls below stay off.
             self.picker.Disable()
-            self._show_details(match, match.part if match else None)
+            self._show_details(None, None, excluded=self._selected_excluded())
+            return
+        if match.matched:
+            self.picker.Disable()
+            self._show_details(match, match.part)
             return
         labels = [f"{p.get('IPN') or '—'} · {p.get('name','')}" for p in match.candidates]
         if labels:
@@ -370,7 +396,13 @@ class ReviewDialog(wx.Dialog):
 
     def _on_create(self, _event):
         idx, match = self._selected_match()
-        if match is None or not match.row.get("sku"):
+        if match is None:
+            wx.MessageBox(
+                "That symbol is not being sent to InvenTree, so there is "
+                "nothing to create for it.",
+                "Create from LCSC", wx.OK | wx.ICON_INFORMATION)
+            return
+        if not match.row.get("sku"):
             wx.MessageBox("That symbol has no LCSC code to create from.",
                           "Create from LCSC", wx.OK | wx.ICON_INFORMATION)
             return

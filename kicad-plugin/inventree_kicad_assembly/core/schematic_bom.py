@@ -74,7 +74,7 @@ def _first(row, names):
 
 
 #: Why a symbol is not part of the InvenTree BOM, in the words the user sees.
-DNP = "DNP — not fitted"
+DNP = "DNP"
 NOT_IN_BOM = "excluded from BOM"
 
 
@@ -86,6 +86,11 @@ def _exclusion(row):
     """
     if (row.get(DNP_FIELD) or "").strip():
         return DNP
+    # Belt and braces: kicad-cli drops excluded-from-BOM symbols before the
+    # export, so this column is empty on every row it does emit (verified --
+    # this design has ten such footprints and none of them reach the CSV).
+    # Kept in case that ever changes, since silently importing a mounting hole
+    # would be worse than an unreachable branch.
     if (row.get(NOT_IN_BOM_FIELD) or "").strip():
         return NOT_IN_BOM
     return ""
